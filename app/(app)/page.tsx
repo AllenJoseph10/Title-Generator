@@ -1,17 +1,19 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Sparkles, LogOut } from 'lucide-react';
+import { Sparkles, LogOut, Keyboard } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { UploadDropzone } from '@/components/app/upload-dropzone';
 import { VideoPanel } from '@/components/app/video-panel';
-import { TitleList } from '@/components/app/title-list';
+import { TitleList, type TitleListHandle } from '@/components/app/title-list';
 import { HistoryRail } from '@/components/app/history-rail';
 import { HistoryModal } from '@/components/app/history-modal';
 import { RegenerateMenu } from '@/components/app/regenerate-menu';
+import { ShortcutsHelp } from '@/components/app/shortcuts-help';
 import type { GenerateResponse } from '@/components/app/types';
 import { toast } from '@/components/ui/toaster';
+import { useKeyboard } from '@/lib/hooks/use-keyboard';
 
 export default function Page() {
   const [busy, setBusy] = useState<null | 'upload' | 'generate'>(null);
@@ -23,6 +25,8 @@ export default function Page() {
   const [historyId, setHistoryId] = useState<string | null>(null);
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
   const [lastSteering, setLastSteering] = useState<string>('');
+  const [helpOpen, setHelpOpen] = useState(false);
+  const titleListRef = useRef<TitleListHandle>(null);
   const objectUrlRef = useRef<string | null>(null);
 
   useEffect(
@@ -119,6 +123,30 @@ export default function Page() {
     window.location.href = '/login';
   };
 
+  // Page-level keyboard shortcuts. Title-row shortcuts (↑↓ c 1-9) live in TitleList.
+  useKeyboard(
+    (e) => {
+      if (e.key === '?') {
+        e.preventDefault();
+        setHelpOpen((v) => !v);
+        return;
+      }
+      if (helpOpen || historyId) return;
+      if (e.key === 'g' && !e.metaKey && !e.ctrlKey) {
+        if (storagePath && !result && !busy) {
+          e.preventDefault();
+          generate();
+        }
+      } else if (e.key === 'r' && !e.metaKey && !e.ctrlKey) {
+        if (result && !busy) {
+          e.preventDefault();
+          generate('');
+        }
+      }
+    },
+    [storagePath, result, busy, helpOpen, historyId, generate],
+  );
+
   return (
     <div className="min-h-screen flex flex-col">
       <header className="border-b border-border">
@@ -127,9 +155,19 @@ export default function Page() {
             <h1 className="font-display text-xl tracking-tight">Title Generator</h1>
             <span className="text-micro uppercase tracking-[0.12em] text-ink-muted">w. j. wade</span>
           </div>
-          <Button variant="ghost" size="icon" onClick={onLogout} aria-label="Log out">
-            <LogOut className="h-4 w-4" />
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setHelpOpen(true)}
+              aria-label="Keyboard shortcuts"
+            >
+              <Keyboard className="h-4 w-4" />
+            </Button>
+            <Button variant="ghost" size="icon" onClick={onLogout} aria-label="Log out">
+              <LogOut className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       </header>
 
@@ -139,7 +177,7 @@ export default function Page() {
             <UploadDropzone onFile={upload} busy={!!busy} />
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,420px)_1fr] gap-10">
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,400px)_1fr] gap-8 lg:gap-10">
             <div>
               <VideoPanel
                 videoUrl={videoUrl}
@@ -187,7 +225,12 @@ export default function Page() {
                     </div>
                   </div>
                   <Separator />
-                  <TitleList titles={result.titles} generationId={result.id} videoEl={videoEl} />
+                  <TitleList
+                    ref={titleListRef}
+                    titles={result.titles}
+                    generationId={result.id}
+                    videoEl={videoEl}
+                  />
                 </div>
               ) : busy === 'generate' ? (
                 <GeneratingState />
@@ -209,6 +252,7 @@ export default function Page() {
       </main>
 
       <HistoryModal generationId={historyId} onClose={() => setHistoryId(null)} />
+      <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
 }

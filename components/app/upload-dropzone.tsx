@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useRef, useState } from 'react';
+import { motion } from 'framer-motion';
 import { Upload } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -24,7 +25,11 @@ export function UploadDropzone({ onFile, busy }: Props) {
   );
 
   return (
-    <div
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease: 'easeOut' }}
+      whileHover={busy ? undefined : { scale: 1.005 }}
       onClick={() => !busy && inputRef.current?.click()}
       onDragOver={(e) => {
         e.preventDefault();
@@ -60,6 +65,6 @@ export function UploadDropzone({ onFile, busy }: Props) {
           if (f) onFile(f);
         }}
       />
-    </div>
+    </motion.div>
   );
 }
