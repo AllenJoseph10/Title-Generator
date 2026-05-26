@@ -44,6 +44,7 @@ export type PipelineInput = {
   styleFingerprint: string[];
   visionProviderId: ProviderId;
   generationProviderId: ProviderId;
+  steering?: string;
 };
 
 export type PipelineResult = {
@@ -107,6 +108,7 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
       retrievedExamples: retrieval.examples,
       styleFingerprint: input.styleFingerprint,
       requiredFamilies,
+      steering: input.steering,
     })
     .catch((e: Error) => {
       throw new PipelineError('generate', e.message);

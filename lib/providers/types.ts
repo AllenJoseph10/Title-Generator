@@ -57,6 +57,7 @@ export type GenerateArgs = {
   retrievedExamples: CorpusTitle[];
   styleFingerprint: string[];
   requiredFamilies: HookFamily[];
+  steering?: string;
 };
 
 export interface GenerationProvider {

@@ -61,11 +61,14 @@ export const anthropicGeneration: GenerationProvider = {
       },
     ];
 
-    const userText = buildUserMessage({
+    let userText = buildUserMessage({
       description: args.description,
       retrievedExamples: args.retrievedExamples,
       requiredFamilies: args.requiredFamilies,
     });
+    if (args.steering && args.steering.trim().length > 0) {
+      userText += `\n\nAdditional creative direction (apply to ALL 10 titles): ${args.steering.trim().slice(0, 300)}`;
+    }
 
     const res = await anthropic().messages.create({
       model: MODEL,

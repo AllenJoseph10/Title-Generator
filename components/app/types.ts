@@ -6,9 +6,10 @@ export type Title = {
 
 export type VisionDescription = {
   scene: string;
-  vibe: string;
+  subject?: string;
+  setting?: string;
+  vibe: string | string[];
   visualHook: string;
-  durationSec?: number;
 };
 
 export type GenerateResponse = {

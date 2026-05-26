@@ -17,6 +17,7 @@ type Body = {
   creator_handle?: unknown;
   vision_provider?: unknown;
   generation_provider?: unknown;
+  steering?: unknown;
 };
 
 export async function POST(req: NextRequest) {
@@ -40,6 +41,7 @@ export async function POST(req: NextRequest) {
   const visionProvider: ProviderId = (body.vision_provider as ProviderId) ?? 'anthropic';
   const generationProvider: ProviderId = (body.generation_provider as ProviderId) ?? 'anthropic';
   const creatorHandle = typeof body.creator_handle === 'string' ? body.creator_handle : null;
+  const steering = typeof body.steering === 'string' && body.steering.trim().length > 0 ? body.steering : undefined;
 
   // Idempotency: if a generation already exists for this client_request_id, return it.
   const existing = await db()
@@ -138,6 +140,7 @@ export async function POST(req: NextRequest) {
       styleFingerprint,
       visionProviderId: visionProvider,
       generationProviderId: generationProvider,
+      steering,
     });
   } catch (e) {
     const err = e as PipelineError | Error;

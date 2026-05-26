@@ -9,9 +9,10 @@ type Props = {
   videoUrl: string;
   filename?: string;
   vision?: VisionDescription;
+  onVideoMount?: (el: HTMLVideoElement | null) => void;
 };
 
-export function VideoPanel({ videoUrl, filename, vision }: Props) {
+export function VideoPanel({ videoUrl, filename, vision, onVideoMount }: Props) {
   const [framesOpen, setFramesOpen] = useState(false);
 
   return (
@@ -21,6 +22,8 @@ export function VideoPanel({ videoUrl, filename, vision }: Props) {
           src={videoUrl}
           controls
           playsInline
+          crossOrigin="anonymous"
+          ref={onVideoMount}
           className="h-full w-full object-contain"
         />
       </div>
@@ -48,7 +51,7 @@ export function VideoPanel({ videoUrl, filename, vision }: Props) {
             <dl className="space-y-3 text-sm">
               <Row label="Scene" value={vision.scene} />
               <Row label="Visual hook" value={vision.visualHook} />
-              <Row label="Vibe" value={vision.vibe} />
+              <Row label="Vibe" value={Array.isArray(vision.vibe) ? vision.vibe.join(' · ') : vision.vibe} />
             </dl>
           </div>
         </div>

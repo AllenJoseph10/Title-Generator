@@ -8,6 +8,8 @@ import { UploadDropzone } from '@/components/app/upload-dropzone';
 import { VideoPanel } from '@/components/app/video-panel';
 import { TitleList } from '@/components/app/title-list';
 import { HistoryRail } from '@/components/app/history-rail';
+import { HistoryModal } from '@/components/app/history-modal';
+import { RegenerateMenu } from '@/components/app/regenerate-menu';
 import type { GenerateResponse } from '@/components/app/types';
 import { toast } from '@/components/ui/toaster';
 
@@ -18,22 +20,29 @@ export default function Page() {
   const [filename, setFilename] = useState<string | null>(null);
   const [result, setResult] = useState<GenerateResponse | null>(null);
   const [historyKey, setHistoryKey] = useState(0);
+  const [historyId, setHistoryId] = useState<string | null>(null);
+  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
+  const [lastSteering, setLastSteering] = useState<string>('');
   const objectUrlRef = useRef<string | null>(null);
 
-  // Revoke object URL on unmount/replace to avoid leaks.
-  useEffect(() => () => {
+  useEffect(
+    () => () => {
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
-    }, []);
+    },
+    [],
+  );
 
   const reset = () => {
     setResult(null);
     setStoragePath(null);
     setFilename(null);
+    setLastSteering('');
     if (objectUrlRef.current) {
       URL.revokeObjectURL(objectUrlRef.current);
       objectUrlRef.current = null;
     }
     setVideoUrl(null);
+    setVideoEl(null);
   };
 
   const upload = useCallback(async (file: File) => {
@@ -56,7 +65,10 @@ export default function Page() {
       setBusy(null);
       return;
     }
-    const { signedUrl, storagePath: path } = (await signRes.json()) as { signedUrl: string; storagePath: string };
+    const { signedUrl, storagePath: path } = (await signRes.json()) as {
+      signedUrl: string;
+      storagePath: string;
+    };
 
     const putRes = await fetch(signedUrl, {
       method: 'PUT',
@@ -72,57 +84,35 @@ export default function Page() {
     setBusy(null);
   }, []);
 
-  const generate = useCallback(async () => {
-    if (!storagePath) return;
-    setBusy('generate');
-    const clientRequestId = crypto.randomUUID();
-    const res = await fetch('/api/generate', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        client_request_id: clientRequestId,
-        storage_path: storagePath,
-        niche_id: 'luxury-menswear',
-        creator_handle: 'william_j_wade',
-      }),
-    });
-    const json = await res.json();
-    if (!res.ok) {
-      toast.error(json.error ?? `Generate failed (${res.status})`);
+  const generate = useCallback(
+    async (steering = '') => {
+      if (!storagePath) return;
+      setBusy('generate');
+      const clientRequestId = crypto.randomUUID();
+      const res = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          client_request_id: clientRequestId,
+          storage_path: storagePath,
+          niche_id: 'luxury-menswear',
+          creator_handle: 'william_j_wade',
+          steering: steering || undefined,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        toast.error(json.error ?? `Generate failed (${res.status})`);
+        setBusy(null);
+        return;
+      }
+      setResult(json as GenerateResponse);
+      setLastSteering(steering);
+      setHistoryKey((k) => k + 1);
       setBusy(null);
-      return;
-    }
-    setResult(json as GenerateResponse);
-    setHistoryKey((k) => k + 1);
-    setBusy(null);
-  }, [storagePath]);
-
-  const openHistory = useCallback(async (id: string) => {
-    setBusy('generate');
-    const r = await fetch(`/api/generation/${id}`);
-    if (!r.ok) {
-      toast.error('Could not load that generation');
-      setBusy(null);
-      return;
-    }
-    const j = await r.json();
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current);
-      objectUrlRef.current = null;
-    }
-    setVideoUrl(j.signedUrl);
-    setStoragePath(j.storagePath);
-    setFilename(j.storagePath?.split('/').pop() ?? null);
-    setResult({
-      id: j.id,
-      titles: j.titles,
-      visionDescription: j.visionDescription,
-      storagePath: j.storagePath,
-      costUsd: j.costUsd,
-      durationMs: j.durationMs,
-    });
-    setBusy(null);
-  }, []);
+    },
+    [storagePath],
+  );
 
   const onLogout = async () => {
     await fetch('/api/logout', { method: 'POST' });
@@ -155,14 +145,10 @@ export default function Page() {
                 videoUrl={videoUrl}
                 filename={filename ?? undefined}
                 vision={result?.visionDescription}
+                onVideoMount={setVideoEl}
               />
               {!result && storagePath && (
-                <Button
-                  onClick={generate}
-                  disabled={!!busy}
-                  size="lg"
-                  className="w-full mt-6"
-                >
+                <Button onClick={() => generate()} disabled={!!busy} size="lg" className="w-full mt-6">
                   <Sparkles className="h-4 w-4" />
                   {busy === 'generate' ? 'Generating…' : 'Generate titles'}
                 </Button>
@@ -180,18 +166,28 @@ export default function Page() {
             <div className="min-w-0 max-w-2xl">
               {result ? (
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <p className="font-mono text-xs text-ink-muted tabular-nums">
-                      {result.titles.length} titles · ${result.costUsd?.toFixed(4) ?? '–'} ·{' '}
-                      {result.durationMs ? `${(result.durationMs / 1000).toFixed(1)}s` : '–'}
-                      {result.idempotent ? ' · cached' : ''}
-                    </p>
-                    <Button variant="outline" size="sm" onClick={reset}>
-                      New video
-                    </Button>
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="flex items-center gap-3 flex-wrap min-w-0">
+                      <p className="font-mono text-xs text-ink-muted tabular-nums">
+                        {result.titles.length} titles · ${result.costUsd?.toFixed(4) ?? '–'} ·{' '}
+                        {result.durationMs ? `${(result.durationMs / 1000).toFixed(1)}s` : '–'}
+                        {result.idempotent ? ' · cached' : ''}
+                      </p>
+                      {lastSteering && (
+                        <span className="text-micro uppercase tracking-[0.08em] text-gold border border-gold/40 px-2 py-0.5 truncate max-w-[220px]">
+                          {summarizeSteering(lastSteering)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <RegenerateMenu onRegenerate={generate} busy={busy === 'generate'} />
+                      <Button variant="ghost" size="sm" onClick={reset}>
+                        New video
+                      </Button>
+                    </div>
                   </div>
                   <Separator />
-                  <TitleList titles={result.titles} generationId={result.id} />
+                  <TitleList titles={result.titles} generationId={result.id} videoEl={videoEl} />
                 </div>
               ) : busy === 'generate' ? (
                 <GeneratingState />
@@ -207,12 +203,19 @@ export default function Page() {
         <div className="mt-16">
           <Separator />
           <div className="pt-6">
-            <HistoryRail onSelect={openHistory} refreshKey={historyKey} />
+            <HistoryRail onSelect={setHistoryId} refreshKey={historyKey} />
           </div>
         </div>
       </main>
+
+      <HistoryModal generationId={historyId} onClose={() => setHistoryId(null)} />
     </div>
   );
+}
+
+function summarizeSteering(s: string): string {
+  const head = s.split(/[.!]/)[0] ?? s;
+  return head.replace(/^Be |^Lean |^Avoid |^Keep /, '').trim().slice(0, 28);
 }
 
 function GeneratingState() {

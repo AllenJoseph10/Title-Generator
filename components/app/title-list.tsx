@@ -1,11 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import { Copy, Check, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { Copy, Check, ThumbsUp, ThumbsDown, Eye } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toaster';
 import { cn } from '@/lib/utils';
+import { BurnInPreview } from './burn-in-preview';
 import {
   priorBucket,
   STRENGTH_VARIANT,
@@ -15,11 +16,13 @@ import {
 type Props = {
   titles: Title[];
   generationId: string;
+  videoEl?: HTMLVideoElement | null;
 };
 
-export function TitleList({ titles, generationId }: Props) {
+export function TitleList({ titles, generationId, videoEl }: Props) {
   const [copied, setCopied] = useState<number | null>(null);
   const [votes, setVotes] = useState<Record<number, -1 | 1>>({});
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 
   const onCopy = async (i: number, text: string) => {
     await navigator.clipboard.writeText(text);
@@ -46,7 +49,7 @@ export function TitleList({ titles, generationId }: Props) {
         return (
           <li
             key={i}
-            className="group grid grid-cols-[28px_1fr_auto] gap-4 py-4 items-start"
+            className="group relative grid grid-cols-[28px_1fr_auto] gap-4 py-4 items-start"
           >
             <span className="text-micro uppercase tracking-[0.08em] text-ink-muted pt-1.5 tabular-nums">
               {String(i + 1).padStart(2, '0')}
@@ -62,6 +65,17 @@ export function TitleList({ titles, generationId }: Props) {
             </div>
 
             <div className="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
+              {videoEl && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setPreviewIndex((p) => (p === i ? null : i))}
+                  aria-label="Preview burn-in"
+                  className={cn(previewIndex === i && 'text-ink bg-bg-inset')}
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="icon"
@@ -89,6 +103,9 @@ export function TitleList({ titles, generationId }: Props) {
                 <ThumbsDown className="h-3.5 w-3.5" />
               </Button>
             </div>
+            {videoEl && (
+              <BurnInPreview videoEl={videoEl} title={t.text} open={previewIndex === i} />
+            )}
           </li>
         );
       })}
