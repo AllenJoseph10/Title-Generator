@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { Button } from '@/components/ui/button';
 
 export default function LoginPage() {
   const [passcode, setPasscode] = useState('');
@@ -25,22 +26,29 @@ export default function LoginPage() {
   }
 
   return (
-    <main style={{ maxWidth: 360 }}>
-      <h1>Sign in</h1>
-      <form onSubmit={onSubmit}>
-        <input
-          type="password"
-          value={passcode}
-          onChange={(e) => setPasscode(e.target.value)}
-          placeholder="passcode"
-          autoFocus
-          style={{ width: '100%', padding: 8, fontSize: 16 }}
-        />
-        <button type="submit" disabled={busy || !passcode} style={{ marginTop: 12, padding: '8px 16px' }}>
-          {busy ? '…' : 'Enter'}
-        </button>
-        {error && <p style={{ color: '#c00', marginTop: 12 }}>{error}</p>}
-      </form>
+    <main className="min-h-screen flex items-center justify-center px-6">
+      <div className="w-full max-w-sm">
+        <div className="text-center mb-10">
+          <h1 className="font-display text-3xl tracking-tight text-ink">Title Generator</h1>
+          <p className="text-micro uppercase tracking-[0.12em] text-ink-muted mt-2">
+            Private · single tenant
+          </p>
+        </div>
+        <form onSubmit={onSubmit} className="space-y-4">
+          <input
+            type="password"
+            value={passcode}
+            onChange={(e) => setPasscode(e.target.value)}
+            placeholder="passcode"
+            autoFocus
+            className="w-full h-11 px-4 bg-bg-raised border border-border focus:border-ink-muted rounded-md text-ink placeholder:text-ink-muted outline-none transition-colors"
+          />
+          <Button type="submit" disabled={busy || !passcode} size="lg" className="w-full">
+            {busy ? '…' : 'Enter'}
+          </Button>
+          {error && <p className="text-sm text-accent text-center pt-1">{error}</p>}
+        </form>
+      </div>
     </main>
   );
 }

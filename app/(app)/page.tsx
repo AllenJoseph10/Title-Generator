@@ -1,42 +1,49 @@
 'use client';
 
-import { useCallback, useState } from 'react';
-
-type Title = {
-  text: string;
-  hookFamily: string;
-  templateSimilarityPrior: number;
-};
-
-type GenerateResponse = {
-  id: string;
-  titles: Title[];
-  costUsd?: number;
-  durationMs?: number;
-  idempotent?: boolean;
-};
-
-function priorBucket(p: number): 'low' | 'med' | 'high' {
-  if (p >= 0.66) return 'high';
-  if (p >= 0.33) return 'med';
-  return 'low';
-}
-
-const BUCKET_COLOR = { high: '#22c55e', med: '#eab308', low: '#9ca3af' } as const;
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Sparkles, LogOut } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Separator } from '@/components/ui/separator';
+import { UploadDropzone } from '@/components/app/upload-dropzone';
+import { VideoPanel } from '@/components/app/video-panel';
+import { TitleList } from '@/components/app/title-list';
+import { HistoryRail } from '@/components/app/history-rail';
+import type { GenerateResponse } from '@/components/app/types';
+import { toast } from '@/components/ui/toaster';
 
 export default function Page() {
   const [busy, setBusy] = useState<null | 'upload' | 'generate'>(null);
-  const [error, setError] = useState<string | null>(null);
   const [storagePath, setStoragePath] = useState<string | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [filename, setFilename] = useState<string | null>(null);
   const [result, setResult] = useState<GenerateResponse | null>(null);
-  const [dragOver, setDragOver] = useState(false);
-  const [votes, setVotes] = useState<Record<number, -1 | 1>>({});
+  const [historyKey, setHistoryKey] = useState(0);
+  const objectUrlRef = useRef<string | null>(null);
+
+  // Revoke object URL on unmount/replace to avoid leaks.
+  useEffect(() => () => {
+      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+    }, []);
+
+  const reset = () => {
+    setResult(null);
+    setStoragePath(null);
+    setFilename(null);
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+    setVideoUrl(null);
+  };
 
   const upload = useCallback(async (file: File) => {
+    reset();
     setBusy('upload');
-    setError(null);
-    setResult(null);
-    setVotes({});
+    setFilename(file.name);
+
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+    objectUrlRef.current = URL.createObjectURL(file);
+    setVideoUrl(objectUrlRef.current);
 
     const signRes = await fetch('/api/upload-url', {
       method: 'POST',
@@ -45,7 +52,7 @@ export default function Page() {
     });
     if (!signRes.ok) {
       const j = (await signRes.json().catch(() => ({}))) as { error?: string };
-      setError(j.error ?? `upload-url failed (${signRes.status})`);
+      toast.error(j.error ?? `upload-url failed (${signRes.status})`);
       setBusy(null);
       return;
     }
@@ -57,8 +64,7 @@ export default function Page() {
       body: file,
     });
     if (!putRes.ok) {
-      const txt = await putRes.text().catch(() => '');
-      setError(`upload failed (${putRes.status}): ${txt.slice(0, 200)}`);
+      toast.error(`Upload failed (${putRes.status})`);
       setBusy(null);
       return;
     }
@@ -69,8 +75,6 @@ export default function Page() {
   const generate = useCallback(async () => {
     if (!storagePath) return;
     setBusy('generate');
-    setError(null);
-    setResult(null);
     const clientRequestId = crypto.randomUUID();
     const res = await fetch('/api/generate', {
       method: 'POST',
@@ -84,147 +88,145 @@ export default function Page() {
     });
     const json = await res.json();
     if (!res.ok) {
-      setError(json.error ?? `generate failed (${res.status})`);
-    } else {
-      setResult(json as GenerateResponse);
+      toast.error(json.error ?? `Generate failed (${res.status})`);
+      setBusy(null);
+      return;
     }
+    setResult(json as GenerateResponse);
+    setHistoryKey((k) => k + 1);
     setBusy(null);
   }, [storagePath]);
 
-  const vote = useCallback(
-    async (titleIndex: number, v: -1 | 1) => {
-      if (!result) return;
-      setVotes((prev) => ({ ...prev, [titleIndex]: v }));
-      const r = await fetch('/api/feedback', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ generation_id: result.id, title_index: titleIndex, vote: v }),
-      });
-      if (!r.ok) setError(`feedback failed (${r.status})`);
-    },
-    [result],
-  );
+  const openHistory = useCallback(async (id: string) => {
+    setBusy('generate');
+    const r = await fetch(`/api/generation/${id}`);
+    if (!r.ok) {
+      toast.error('Could not load that generation');
+      setBusy(null);
+      return;
+    }
+    const j = await r.json();
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+    setVideoUrl(j.signedUrl);
+    setStoragePath(j.storagePath);
+    setFilename(j.storagePath?.split('/').pop() ?? null);
+    setResult({
+      id: j.id,
+      titles: j.titles,
+      visionDescription: j.visionDescription,
+      storagePath: j.storagePath,
+      costUsd: j.costUsd,
+      durationMs: j.durationMs,
+    });
+    setBusy(null);
+  }, []);
 
-  const onDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setDragOver(false);
-      const f = e.dataTransfer.files?.[0];
-      if (f) upload(f);
-    },
-    [upload],
-  );
+  const onLogout = async () => {
+    await fetch('/api/logout', { method: 'POST' });
+    window.location.href = '/login';
+  };
 
   return (
-    <main style={{ maxWidth: 760 }}>
-      <h1>Title Generator</h1>
+    <div className="min-h-screen flex flex-col">
+      <header className="border-b border-border">
+        <div className="container flex h-14 items-center justify-between">
+          <div className="flex items-baseline gap-3">
+            <h1 className="font-display text-xl tracking-tight">Title Generator</h1>
+            <span className="text-micro uppercase tracking-[0.12em] text-ink-muted">w. j. wade</span>
+          </div>
+          <Button variant="ghost" size="icon" onClick={onLogout} aria-label="Log out">
+            <LogOut className="h-4 w-4" />
+          </Button>
+        </div>
+      </header>
 
-      <div
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragOver(true);
-        }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={onDrop}
-        onClick={() => document.getElementById('file-input')?.click()}
-        style={{
-          border: `2px dashed ${dragOver ? '#0070f3' : '#999'}`,
-          background: dragOver ? '#f0f7ff' : 'transparent',
-          padding: 32,
-          borderRadius: 8,
-          textAlign: 'center',
-          cursor: busy ? 'wait' : 'pointer',
-          opacity: busy ? 0.6 : 1,
-        }}
-      >
-        {busy === 'upload'
-          ? 'Uploading…'
-          : storagePath
-            ? `✓ Ready: ${storagePath.split('/').pop()}`
-            : 'Drag a silent MP4 or MOV (≤ 50 MB) here'}
-        <input
-          id="file-input"
-          type="file"
-          accept="video/mp4,video/quicktime"
-          style={{ display: 'none' }}
-          disabled={!!busy}
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) upload(f);
-          }}
-        />
+      <main className="container flex-1 py-8">
+        {!videoUrl ? (
+          <div className="max-w-2xl mx-auto pt-8">
+            <UploadDropzone onFile={upload} busy={!!busy} />
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,420px)_1fr] gap-10">
+            <div>
+              <VideoPanel
+                videoUrl={videoUrl}
+                filename={filename ?? undefined}
+                vision={result?.visionDescription}
+              />
+              {!result && storagePath && (
+                <Button
+                  onClick={generate}
+                  disabled={!!busy}
+                  size="lg"
+                  className="w-full mt-6"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  {busy === 'generate' ? 'Generating…' : 'Generate titles'}
+                </Button>
+              )}
+              {!result && !busy && (
+                <button
+                  onClick={reset}
+                  className="mt-4 text-xs text-ink-muted hover:text-ink-dim underline-offset-2 hover:underline w-full text-center"
+                >
+                  Choose a different video
+                </button>
+              )}
+            </div>
+
+            <div className="min-w-0 max-w-2xl">
+              {result ? (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <p className="font-mono text-xs text-ink-muted tabular-nums">
+                      {result.titles.length} titles · ${result.costUsd?.toFixed(4) ?? '–'} ·{' '}
+                      {result.durationMs ? `${(result.durationMs / 1000).toFixed(1)}s` : '–'}
+                      {result.idempotent ? ' · cached' : ''}
+                    </p>
+                    <Button variant="outline" size="sm" onClick={reset}>
+                      New video
+                    </Button>
+                  </div>
+                  <Separator />
+                  <TitleList titles={result.titles} generationId={result.id} />
+                </div>
+              ) : busy === 'generate' ? (
+                <GeneratingState />
+              ) : (
+                <div className="flex h-full items-center justify-center text-ink-muted text-sm italic min-h-[300px]">
+                  Press Generate to see 10 ranked titles
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="mt-16">
+          <Separator />
+          <div className="pt-6">
+            <HistoryRail onSelect={openHistory} refreshKey={historyKey} />
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+function GeneratingState() {
+  return (
+    <div className="space-y-4 animate-pulse">
+      <div className="h-4 w-48 bg-bg-raised rounded-sm" />
+      <div className="space-y-3 pt-2">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="space-y-2 py-3 border-b border-border">
+            <div className="h-5 w-3/4 bg-bg-raised rounded-sm" />
+            <div className="h-3 w-32 bg-bg-raised/60 rounded-sm" />
+          </div>
+        ))}
       </div>
-
-      {storagePath && !result && (
-        <button
-          onClick={generate}
-          disabled={!!busy}
-          style={{ marginTop: 16, padding: '10px 20px', fontSize: 15, cursor: busy ? 'wait' : 'pointer' }}
-        >
-          {busy === 'generate' ? 'Generating…' : 'Generate titles'}
-        </button>
-      )}
-
-      {error && <p style={{ color: '#c00', marginTop: 16 }}>{error}</p>}
-
-      {result && (
-        <section style={{ marginTop: 24 }}>
-          <p style={{ color: '#666', fontSize: 13 }}>
-            {result.titles.length} titles · ${result.costUsd?.toFixed(4) ?? '–'} · {result.durationMs ?? '–'}ms
-            {result.idempotent ? ' · (cached)' : ''}
-          </p>
-          <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
-            <thead>
-              <tr style={{ borderBottom: '1px solid #ddd', textAlign: 'left', fontSize: 12, color: '#666' }}>
-                <th style={{ padding: '6px 8px', width: 32 }}>#</th>
-                <th style={{ padding: '6px 8px' }}>Title</th>
-                <th style={{ padding: '6px 8px', width: 140 }}>Hook</th>
-                <th style={{ padding: '6px 8px', width: 90 }}>Strength</th>
-                <th style={{ padding: '6px 8px', width: 90 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {result.titles.map((t, i) => {
-                const bucket = priorBucket(t.templateSimilarityPrior);
-                const v = votes[i];
-                return (
-                  <tr key={i} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                    <td style={{ padding: '8px 8px', color: '#999' }}>{i + 1}</td>
-                    <td style={{ padding: '8px 8px' }}>{t.text}</td>
-                    <td style={{ padding: '8px 8px', fontFamily: 'monospace', fontSize: 12, color: '#666' }}>{t.hookFamily}</td>
-                    <td style={{ padding: '8px 8px' }}>
-                      <span
-                        style={{
-                          background: BUCKET_COLOR[bucket],
-                          color: '#fff',
-                          padding: '2px 8px',
-                          borderRadius: 4,
-                          fontSize: 11,
-                          textTransform: 'uppercase',
-                        }}
-                      >
-                        {bucket}
-                      </span>
-                    </td>
-                    <td style={{ padding: '8px 8px' }}>
-                      <button
-                        onClick={() => vote(i, 1)}
-                        disabled={v === 1}
-                        style={{ marginRight: 4, opacity: v === 1 ? 1 : 0.5 }}
-                      >
-                        👍
-                      </button>
-                      <button onClick={() => vote(i, -1)} disabled={v === -1} style={{ opacity: v === -1 ? 1 : 0.5 }}>
-                        👎
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </section>
-      )}
-    </main>
+    </div>
   );
 }

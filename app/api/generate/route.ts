@@ -54,6 +54,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       id: existing.data.id,
       titles: existing.data.generated_titles,
+      visionDescription: existing.data.vision_description,
+      storagePath: body.storage_path,
+      costUsd: existing.data.cost_usd,
+      durationMs: existing.data.duration_ms,
       idempotent: true,
     });
   }
@@ -161,6 +165,8 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     id: attemptId,
     titles: result.titles,
+    visionDescription: result.visionDescription,
+    storagePath: body.storage_path,
     costUsd: result.costUsd,
     durationMs: result.durationMs,
   });

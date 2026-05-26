@@ -1,0 +1,11 @@
+video_id,date_posted,platform,creator_handle,video_url,burned_in_title,caption,views,likes,comments,shares,saves,duration_sec,niche,hook_family,notes
+1,2025-MM-DD,tiktok,william_j_wade,https://...,EXAMPLE: The one watch every man should own before 30,Optional caption text here,125000,8400,210,1100,3200,28,luxury-menswear,,leave hook_family blank — I'll classify
+2,,,,,,,,,,,,luxury-menswear,,
+3,,,,,,,,,,,,luxury-menswear,,
+4,,,,,,,,,,,,luxury-menswear,,
+5,,,,,,,,,,,,luxury-menswear,,
+6,,,,,,,,,,,,luxury-menswear,,
+7,,,,,,,,,,,,luxury-menswear,,
+8,,,,,,,,,,,,luxury-menswear,,
+9,,,,,,,,,,,,luxury-menswear,,
+10,,,,,,,,,,,,luxury-menswear,,
