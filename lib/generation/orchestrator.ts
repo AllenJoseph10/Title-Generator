@@ -4,7 +4,6 @@ import { probeVideo } from '@/lib/media/probe';
 import { classifyCandidates } from '@/lib/hooks/classify';
 import type { HookFamily } from '@/lib/hooks/taxonomy';
 import type {
-  CorpusTitle,
   GeneratedTitle,
   VisionDescription,
   VisionProvider,
@@ -13,10 +12,12 @@ import type {
 } from '@/lib/providers/types';
 import { anthropicVision } from '@/lib/providers/anthropic/vision';
 import { anthropicGeneration } from '@/lib/providers/anthropic/generation';
+import { embed, embedMany } from '@/lib/providers/openai/embedding';
+import { retrieveAndRerank } from '@/lib/retrieval/search';
+import { computeTitlePrior } from '@/lib/retrieval/prior';
 
 const MAX_DURATION_SEC = 60;
 const TARGET_FRAMES = 8;
-const PLACEHOLDER_PRIOR = 0.5; // Step 5 replaces this with real similarity math.
 
 export function selectVisionProvider(id: ProviderId): VisionProvider {
   switch (id) {
@@ -41,7 +42,6 @@ export type PipelineInput = {
   nicheId: string;
   styleBrief: string;
   styleFingerprint: string[];
-  retrievedExamples: CorpusTitle[];
   visionProviderId: ProviderId;
   generationProviderId: ProviderId;
 };
@@ -89,13 +89,22 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
     visionRes.description.visualHook,
   );
 
+  // Embed the query (scene + visual hook) and retrieve corpus neighbors.
+  const queryText = `${visionRes.description.scene} ${visionRes.description.visualHook}`.slice(0, 8000);
+  const queryEmbed = await embed(queryText).catch((e: Error) => {
+    throw new PipelineError('vision', `embed query: ${e.message}`);
+  });
+  const retrieval = await retrieveAndRerank(input.nicheId, queryEmbed.vector).catch((e: Error) => {
+    throw new PipelineError('vision', `retrieve: ${e.message}`);
+  });
+
   const generator = selectGenerationProvider(input.generationProviderId);
   const genRes = await generator
     .generate({
       description: visionRes.description,
       nicheId: input.nicheId,
       styleBrief: input.styleBrief,
-      retrievedExamples: input.retrievedExamples,
+      retrievedExamples: retrieval.examples,
       styleFingerprint: input.styleFingerprint,
       requiredFamilies,
     })
@@ -103,21 +112,37 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
       throw new PipelineError('generate', e.message);
     });
 
-  const titles: GeneratedTitle[] = genRes.titles.map((t) => ({
-    text: t.text,
-    hookFamily: t.hookFamily,
-    templateSimilarityPrior: PLACEHOLDER_PRIOR,
-  }));
+  // Embed each generated title to compute prior vs neighbors. One batched call.
+  let titles: GeneratedTitle[];
+  let priorEmbedCostUsd = queryEmbed.costUsd;
+  if (retrieval.neighbors.length > 0) {
+    const titleEmbeds = await embedMany(genRes.titles.map((t) => t.text)).catch((e: Error) => {
+      throw new PipelineError('generate', `embed titles: ${e.message}`);
+    });
+    priorEmbedCostUsd += titleEmbeds.reduce((s, e) => s + e.costUsd, 0);
+    titles = genRes.titles.map((t, i) => ({
+      text: t.text,
+      hookFamily: t.hookFamily,
+      templateSimilarityPrior: computeTitlePrior(titleEmbeds[i].vector, t.hookFamily, retrieval.neighbors),
+    }));
+  } else {
+    // No corpus rows for this niche yet. Prior falls back to 0.5 for every title.
+    titles = genRes.titles.map((t) => ({
+      text: t.text,
+      hookFamily: t.hookFamily,
+      templateSimilarityPrior: 0.5,
+    }));
+  }
 
   const durationMs = Math.round(performance.now() - t0);
-  const costUsd = visionRes.costUsd + genRes.costUsd;
+  const costUsd = visionRes.costUsd + genRes.costUsd + priorEmbedCostUsd;
   const tokensIn = visionRes.tokensIn + genRes.tokensIn + genRes.tokensInCacheRead + genRes.tokensInCacheWrite;
   const tokensOut = visionRes.tokensOut + genRes.tokensOut;
 
   return {
     visionDescription: visionRes.description,
     titles,
-    retrievedCorpusIds: input.retrievedExamples.map((e) => e.id),
+    retrievedCorpusIds: retrieval.examples.map((e) => e.id),
     costUsd,
     tokensIn,
     tokensOut,

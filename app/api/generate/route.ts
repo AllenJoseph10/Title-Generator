@@ -132,7 +132,6 @@ export async function POST(req: NextRequest) {
       nicheId: niche.data.id,
       styleBrief: niche.data.style_brief,
       styleFingerprint,
-      retrievedExamples: [], // Step 5 fills this in.
       visionProviderId: visionProvider,
       generationProviderId: generationProvider,
     });
