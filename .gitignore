@@ -1,0 +1,31 @@
+# Dependencies
+node_modules
+
+# Next.js build output
+.next
+.vercel
+next-env.d.ts
+*.tsbuildinfo
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+vercel recovery-codes.txt
+*recovery-codes*
+*.pem
+*.key
+
+# Datasets — never commit raw creator content
+Will Wade Dataset/
+*Dataset/
+*/dataset/
+*.mp4
+*.mov
+
+# Editor / OS
+.DS_Store
+.claude/
+.vscode/
+.idea/
+*.log
