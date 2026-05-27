@@ -11,6 +11,7 @@ import { HistoryRail } from '@/components/app/history-rail';
 import { HistoryModal } from '@/components/app/history-modal';
 import { RegenerateMenu } from '@/components/app/regenerate-menu';
 import { ShortcutsHelp } from '@/components/app/shortcuts-help';
+import { ProviderToggle, type Provider } from '@/components/app/provider-toggle';
 import type { GenerateResponse } from '@/components/app/types';
 import { toast } from '@/components/ui/toaster';
 import { useKeyboard } from '@/lib/hooks/use-keyboard';
@@ -26,7 +27,19 @@ export default function Page() {
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
   const [lastSteering, setLastSteering] = useState<string>('');
   const [helpOpen, setHelpOpen] = useState(false);
+  const [provider, setProvider] = useState<Provider>('anthropic');
   const titleListRef = useRef<TitleListHandle>(null);
+
+  // Load saved provider preference on mount.
+  useEffect(() => {
+    const saved = typeof window !== 'undefined' ? window.localStorage.getItem('provider') : null;
+    if (saved === 'anthropic' || saved === 'openai') setProvider(saved);
+  }, []);
+
+  const updateProvider = (p: Provider) => {
+    setProvider(p);
+    if (typeof window !== 'undefined') window.localStorage.setItem('provider', p);
+  };
   const objectUrlRef = useRef<string | null>(null);
 
   useEffect(
@@ -102,6 +115,8 @@ export default function Page() {
           niche_id: 'luxury-menswear',
           creator_handle: 'william_j_wade',
           steering: steering || undefined,
+          vision_provider: provider,
+          generation_provider: provider,
         }),
       });
       const json = await res.json();
@@ -115,7 +130,7 @@ export default function Page() {
       setHistoryKey((k) => k + 1);
       setBusy(null);
     },
-    [storagePath],
+    [storagePath, provider],
   );
 
   const onLogout = async () => {
@@ -155,7 +170,8 @@ export default function Page() {
             <h1 className="font-display text-xl tracking-tight">Title Generator</h1>
             <span className="text-micro uppercase tracking-[0.12em] text-ink-muted">w. j. wade</span>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-3">
+            <ProviderToggle value={provider} onChange={updateProvider} disabled={busy === 'generate'} />
             <Button
               variant="ghost"
               size="icon"

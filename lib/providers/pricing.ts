@@ -10,14 +10,17 @@ export const ANTHROPIC_PRICING = {
   },
 } as const;
 
-export const OPENAI_PRICING = {
-  'text-embedding-3-small': {
-    input: 0.02,
-  },
+export const OPENAI_EMBEDDING_PRICING = {
+  'text-embedding-3-small': { input: 0.02 },
+} as const;
+
+export const OPENAI_CHAT_PRICING = {
+  'gpt-4o': { input: 2.50, output: 10.00 },
 } as const;
 
 export type AnthropicModel = keyof typeof ANTHROPIC_PRICING;
-export type OpenAIEmbeddingModel = keyof typeof OPENAI_PRICING;
+export type OpenAIEmbeddingModel = keyof typeof OPENAI_EMBEDDING_PRICING;
+export type OpenAIChatModel = keyof typeof OPENAI_CHAT_PRICING;
 
 export function anthropicCost(
   model: AnthropicModel,
@@ -34,5 +37,13 @@ export function anthropicCost(
 }
 
 export function openaiEmbeddingCost(model: OpenAIEmbeddingModel, tokens: number): number {
-  return (tokens * OPENAI_PRICING[model].input) / 1_000_000;
+  return (tokens * OPENAI_EMBEDDING_PRICING[model].input) / 1_000_000;
+}
+
+export function openaiChatCost(
+  model: OpenAIChatModel,
+  usage: { input: number; output: number },
+): number {
+  const p = OPENAI_CHAT_PRICING[model];
+  return (usage.input * p.input + usage.output * p.output) / 1_000_000;
 }

@@ -12,6 +12,8 @@ import type {
 } from '@/lib/providers/types';
 import { anthropicVision } from '@/lib/providers/anthropic/vision';
 import { anthropicGeneration } from '@/lib/providers/anthropic/generation';
+import { openaiVision } from '@/lib/providers/openai/vision';
+import { openaiGeneration } from '@/lib/providers/openai/generation';
 import { embed, embedMany } from '@/lib/providers/openai/embedding';
 import { retrieveAndRerank } from '@/lib/retrieval/search';
 import { computeTitlePrior } from '@/lib/retrieval/prior';
@@ -23,6 +25,8 @@ export function selectVisionProvider(id: ProviderId): VisionProvider {
   switch (id) {
     case 'anthropic':
       return anthropicVision;
+    case 'openai':
+      return openaiVision;
     default:
       throw new Error(`vision provider not implemented: ${id}`);
   }
@@ -32,6 +36,8 @@ export function selectGenerationProvider(id: ProviderId): GenerationProvider {
   switch (id) {
     case 'anthropic':
       return anthropicGeneration;
+    case 'openai':
+      return openaiGeneration;
     default:
       throw new Error(`generation provider not implemented: ${id}`);
   }
