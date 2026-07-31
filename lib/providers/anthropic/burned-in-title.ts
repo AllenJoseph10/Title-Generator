@@ -7,15 +7,30 @@ const MAX_TOKENS = 512;
 
 const TRANSCRIBE_TOOL: Anthropic.Tool = {
   name: 'transcribe_title',
-  description: 'Report the burned-in hook title found in the (top-half-cropped) video frames.',
+  description:
+    'Report the burned-in hook title found in the supplied video frames, with the frame-level evidence for the judgement.',
   input_schema: {
     type: 'object',
     properties: {
       primaryTitle: { type: 'string' },
       additionalTitles: { type: 'array', items: { type: 'string' } },
       noTextFound: { type: 'boolean' },
+      framesWithTitle: { type: 'array', items: { type: 'integer' } },
+      totalFrames: { type: 'integer' },
+      captionsPresent: { type: 'boolean' },
+      partialReveal: { type: 'boolean' },
+      uncertain: { type: 'boolean' },
     },
-    required: ['primaryTitle', 'additionalTitles', 'noTextFound'],
+    required: [
+      'primaryTitle',
+      'additionalTitles',
+      'noTextFound',
+      'framesWithTitle',
+      'totalFrames',
+      'captionsPresent',
+      'partialReveal',
+      'uncertain',
+    ],
   },
 };
 
@@ -23,6 +38,11 @@ export type BurnedInTitleResult = {
   primaryTitle: string | null;
   additionalTitles: string[];
   noTextFound: boolean;
+  framesWithTitle: number[];
+  totalFrames: number;
+  captionsPresent: boolean;
+  partialReveal: boolean;
+  uncertain: boolean;
   costUsd: number;
   tokensIn: number;
   tokensOut: number;
@@ -57,7 +77,16 @@ export async function transcribeBurnedInTitle(jpegs: Buffer[]): Promise<BurnedIn
   const toolUse = res.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
   if (!toolUse) throw new Error(`burned-in-title: no tool_use block in response (stop_reason=${res.stop_reason})`);
 
-  const out = toolUse.input as { primaryTitle: string; additionalTitles: string[]; noTextFound: boolean };
+  const out = toolUse.input as {
+    primaryTitle: string;
+    additionalTitles: string[];
+    noTextFound: boolean;
+    framesWithTitle: number[];
+    totalFrames: number;
+    captionsPresent: boolean;
+    partialReveal: boolean;
+    uncertain: boolean;
+  };
 
   const tokensIn = res.usage.input_tokens;
   const tokensOut = res.usage.output_tokens;
@@ -67,6 +96,12 @@ export async function transcribeBurnedInTitle(jpegs: Buffer[]): Promise<BurnedIn
     primaryTitle: out.noTextFound || !out.primaryTitle?.trim() ? null : out.primaryTitle.trim(),
     additionalTitles: out.additionalTitles ?? [],
     noTextFound: out.noTextFound,
+    // Trust our own frame count over the model's self-report.
+    framesWithTitle: (out.framesWithTitle ?? []).filter((i) => i >= 0 && i < jpegs.length),
+    totalFrames: jpegs.length,
+    captionsPresent: out.captionsPresent ?? false,
+    partialReveal: out.partialReveal ?? false,
+    uncertain: out.uncertain ?? false,
     costUsd,
     tokensIn,
     tokensOut,
