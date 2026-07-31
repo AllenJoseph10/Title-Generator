@@ -115,8 +115,12 @@ async function main() {
       }
       totalCost += first.costUsd;
 
+      // null iff escalation is not warranted — this is the ONLY condition under
+      // which it is safe to later call resolveOcrOutcome(first.pass, null).
+      const escalation = escalationReason(first.pass);
+
       let second: Awaited<ReturnType<typeof readPass>> = null;
-      if (escalationReason(first.pass) !== null) {
+      if (escalation !== null) {
         const count = frameCountFor(entry.durationSec);
         const offset = escalationOffsetFor(intervalFor(entry.durationSec, count));
         second = await readPass(videoBytes, entry.durationSec, offset);
@@ -124,6 +128,37 @@ async function main() {
           totalCost += second.costUsd;
           escalations++;
         }
+      }
+
+      // DANGER — do not delete this guard. resolveOcrOutcome(pass, null) returns
+      // `included` UNCONDITIONALLY when pass 2 is null: it trusts the caller to pass
+      // null only when escalation was never warranted (escalation === null, above).
+      // If escalation WAS warranted but pass 2 could not be extracted (offset sample
+      // too short to yield MIN_USABLE_FRAMES), `second` is null here for a DIFFERENT
+      // reason — calling resolveOcrOutcome in that case would launder an already-
+      // untrustworthy pass-1 reading (e.g. a multi-title claim, which the project
+      // requires be discarded) into `included`, with no error and no escalation
+      // counted. So that case is handled here, before resolveOcrOutcome is ever
+      // called, and resolveOcrOutcome below is only reachable with a null pass 2
+      // when `escalation === null`.
+      if (escalation !== null && !second) {
+        const status = 'needs_review_too_short';
+        counts.set(status, (counts.get(status) ?? 0) + 1);
+        if (recheck) {
+          recheckDiffs.push(
+            `  ${entry.shortcode}\n    stored: ${JSON.stringify(entry.burnedInTitle)}\n    now:    pass 2 unreadable — escalation warranted [${escalation}] but could not be verified (${status})`,
+          );
+          console.log(`  ${entry.shortcode}: ${status} (DIFFERS — escalation warranted [${escalation}], pass 2 unreadable)`);
+          continue;
+        }
+        console.log(`  ${entry.shortcode}: ${status} (escalation warranted [${escalation}], pass 2 unreadable)`);
+        entry.status = status;
+        entry.escalationReason = escalation;
+        entry.ocrCostUsd = first.costUsd;
+        entry.ocrPasses = [first.pass];
+        review.push({ e: entry, p1: first.pass, p2: null, status });
+        await saveManifest(dir, manifest);
+        continue;
       }
 
       const outcome = resolveOcrOutcome(first.pass, second?.pass ?? null);
