@@ -9,6 +9,12 @@ export type ExtractFramesOptions = {
   // Keep only the top portion of each sampled frame (e.g. 0.5 = top half).
   // Useful for isolating burned-in title overlays from unrelated content lower in frame.
   cropTopFraction?: number;
+  // Seconds between sampled frames. Defaults to 2 so existing callers
+  // (the generation orchestrator) keep their current behaviour.
+  intervalSec?: number;
+  // Skip this many seconds before sampling. Used to take a second, disjoint
+  // sample of the same clip.
+  offsetSec?: number;
 };
 
 export async function extractFrames(
@@ -20,9 +26,13 @@ export async function extractFrames(
     throw new Error('ffmpeg-static did not resolve a binary path on this platform');
   }
   if (count < 1) throw new Error(`count must be >= 1 (got ${count})`);
-  const { cropTopFraction } = opts;
+  const { cropTopFraction, intervalSec = 2, offsetSec } = opts;
   if (cropTopFraction !== undefined && (cropTopFraction <= 0 || cropTopFraction > 1)) {
     throw new Error(`cropTopFraction must be in (0, 1] (got ${cropTopFraction})`);
+  }
+  if (intervalSec <= 0) throw new Error(`intervalSec must be > 0 (got ${intervalSec})`);
+  if (offsetSec !== undefined && offsetSec < 0) {
+    throw new Error(`offsetSec must be >= 0 (got ${offsetSec})`);
   }
 
   return withTempVideoFile(input, async (filePath) => {
@@ -32,8 +42,10 @@ export async function extractFrames(
     const args = [
       '-hide_banner',
       '-loglevel', 'error',
+      // Input seeking: must precede -i.
+      ...(offsetSec !== undefined && offsetSec > 0 ? ['-ss', String(offsetSec)] : []),
       '-i', filePath,
-      '-vf', `${cropFilter}fps=1/2,scale=720:-2`,
+      '-vf', `${cropFilter}fps=${1 / intervalSec},scale=720:-2`,
       '-frames:v', String(count),
       '-f', 'image2pipe',
       '-vcodec', 'mjpeg',
