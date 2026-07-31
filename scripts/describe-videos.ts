@@ -1,6 +1,11 @@
 // Stage 2b — describe each included video, so corpus rows can be retrieved by
 // what the video SHOWS rather than by title wording.
-// Usage: tsx scripts/describe-videos.ts <handle>
+// Usage: npm run describe:videos -- <handle>
+//
+// Not `tsx scripts/describe-videos.ts <handle>` directly: lib/providers/anthropic/vision.ts
+// imports `server-only`, which throws when loaded under plain Node (it is designed to run
+// only inside Next's server bundler). The npm script passes `--conditions=react-server`,
+// which makes `server-only` resolve to the no-op module it ships for non-bundler consumers.
 //
 // Reuses lib/providers/anthropic/vision.ts unchanged, at the same 8 frames the
 // generation orchestrator uses. That is deliberate: retrieval compares this
@@ -13,7 +18,7 @@ import path from 'node:path';
 import { loadEnvLocal, requireEnv } from './lib/load-env';
 import { loadManifest, saveManifest } from './lib/manifest';
 import { extractFrames } from '../lib/media/frames';
-import { anthropicVision } from '../lib/providers/anthropic/vision';
+import type { VisionProvider } from '../lib/providers/types';
 
 // Matches TARGET_FRAMES in lib/generation/orchestrator.ts.
 const DESCRIBE_FRAMES = 8;
@@ -27,11 +32,44 @@ function parseArgs(argv: string[]) {
   return { handle };
 }
 
+// Loaded dynamically, inside main(), instead of as a static top-level import.
+// lib/providers/anthropic/vision.ts imports `server-only`, which throws under
+// plain Node. A static import is evaluated before any of our code runs, so no
+// try/catch in main() could ever intercept that failure — this wrapper turns
+// it into an actionable message instead of a raw stack trace about Client and
+// Server Components. Any other import failure is rethrown unchanged.
+async function loadVisionProvider(): Promise<VisionProvider> {
+  try {
+    const mod = await import('../lib/providers/anthropic/vision');
+    return mod.anthropicVision;
+  } catch (e) {
+    const err = e as Error;
+    const isServerOnlyGuard = typeof err.stack === 'string' && err.stack.includes('server-only');
+    if (isServerOnlyGuard) {
+      console.error(
+        [
+          'Failed to load lib/providers/anthropic/vision.ts: it imports `server-only`,',
+          "which throws when loaded under plain Node — that module is designed to run",
+          "only inside Next's server bundler.",
+          '',
+          'Run this script via `npm run describe:videos -- <handle>`, not',
+          '`tsx scripts/describe-videos.ts <handle>` directly. The npm script passes',
+          '`--conditions=react-server`, which makes `server-only` resolve to the no-op',
+          'module it ships for non-bundler consumers.',
+        ].join('\n'),
+      );
+      process.exit(1);
+    }
+    throw err;
+  }
+}
+
 async function main() {
   loadEnvLocal();
   requireEnv(['ANTHROPIC_API_KEY']);
 
   const { handle } = parseArgs(process.argv.slice(2));
+  const anthropicVision = await loadVisionProvider();
   const dir = path.join(process.cwd(), 'datasets', 'raw', handle);
   const manifest = await loadManifest(dir);
 
