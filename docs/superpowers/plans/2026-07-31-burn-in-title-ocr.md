@@ -1468,13 +1468,15 @@ Once all seven tasks are complete, run the real batch in two stages, as budgeted
 
 **Stage A — titles (~$5.63 of ~$20):**
 
+**Invoke through the npm scripts, not `npx tsx` directly.** `lib/providers/anthropic/vision.ts` starts with `import 'server-only'`, which throws under plain Node. The `describe:videos` npm script carries `--conditions=react-server` to resolve that; a direct `npx tsx scripts/describe-videos.ts` call bypasses the flag and crashes. Use `npm run <script> -- <handle>` uniformly so both stages behave the same way.
+
 ```bash
 for h in aligordon bielvalldo budrys.jr bycarlosroberto hqfran itisbainz \
          julesfrankenn khaleelaqrabawi m.iles marvinbrooks philipdeml \
          rowanrow rsimacourbe; do
-  npx tsx scripts/extract-burned-in-titles.ts "$h"
+  npm run extract:titles -- "$h"
 done
-npx tsx scripts/extract-burned-in-titles.ts henryjwade --recheck 20
+npm run extract:titles -- henryjwade --recheck 20
 ```
 
 Then complete the spec §10 audit before spending anything further:
@@ -1488,8 +1490,8 @@ Then complete the spec §10 audit before spending anything further:
 **Stage B — descriptions (~$6.28), only after the audit passes:**
 
 ```bash
-for h in $(ls datasets/raw); do npx tsx scripts/describe-videos.ts "$h"; done
-npx tsx scripts/merge-dataset.ts
+for h in $(ls datasets/raw); do npm run describe:videos -- "$h"; done
+npm run merge:dataset
 ```
 
 If the audit fails, fix `lib/prompts/burned-in-title.ts`, reset the affected rows to `scraped`, and re-run Stage A (~$4.76). The reserve exists for exactly this.
