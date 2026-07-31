@@ -1,168 +1,204 @@
-// Stage 2 — OCR the burned-in hook title out of each scraped video.
-// Usage: tsx scripts/extract-burned-in-titles.ts <handle> [--frames N] [--crop 0.8]
+// Stage 2 — read the burned-in hook title out of each scraped video.
+// Usage:
+//   tsx scripts/extract-burned-in-titles.ts <handle>
+//   tsx scripts/extract-burned-in-titles.ts <handle> --recheck 20
 //
-// Reads datasets/raw/<handle>/manifest.json and asks Claude to identify the
-// burned-in hook title from full, uncropped frames sampled across the whole
-// clip. Titles can sit anywhere from the top to the middle of frame, so
-// isolation relies on the model distinguishing a static hook-title overlay
-// from auto-generated speech captions and incidental scene text by BEHAVIOR
-// (does the text persist unchanged across frames, or change every frame like
-// transcribed speech) rather than by position — see lib/prompts/burned-in-title.ts.
-// Posts with no burned-in title, or with more than one distinct hook title
-// across the clip, are excluded from the CSV but kept (with reason) in the
-// manifest for audit/spot-check.
+// One Claude vision pass per video. A second, offset-sampled pass runs only
+// when the first pass's own evidence is weak, or when acting on it alone would
+// discard a row (see scripts/lib/ocr-decisions.ts). Videos whose two passes
+// conflict are quarantined for human review rather than guessed at.
+//
+// --recheck N re-reads N already-`included` rows and REPORTS differences
+// without mutating the manifest. Used to sample-test rows produced by an
+// earlier version of this script.
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { loadEnvLocal, requireEnv } from './lib/load-env';
+import { loadManifest, saveManifest, type ManifestEntry } from './lib/manifest';
+import { frameCountFor, intervalFor, escalationOffsetFor } from './lib/frame-plan';
+import {
+  escalationReason,
+  resolveOcrOutcome,
+  titlesAgree,
+  type OcrPass,
+} from './lib/ocr-decisions';
 import { extractFrames } from '../lib/media/frames';
 import { transcribeBurnedInTitle } from '../lib/providers/anthropic/burned-in-title';
 
-// No crop by default — titles can be top or mid-frame, so geometry can't
-// reliably isolate them (see header comment). --crop is available as a manual
-// override if a specific creator's captions/UI reliably sit in one zone.
-const DEFAULT_CROP_TOP_FRACTION: number | undefined = undefined;
-// extractFrames samples at 1 frame / 2s starting from t=0, so frame count must
-// scale with clip length or a title change late in a longer clip is never seen.
-const SECONDS_PER_FRAME = 2;
-const MIN_FRAMES = 4;
-const MAX_FRAMES = 30; // covers the full 60s duration cap
-
-type ManifestEntry = {
-  shortcode: string;
-  permalink: string;
-  caption: string;
-  views: number | null;
-  likes: number | null;
-  comments: number | null;
-  postedAt: string | null;
-  durationSec: number | null;
-  videoUrl: string | null;
-  status: string;
-  videoPath?: string;
-  burnedInTitle?: string;
-  additionalTitles?: string[];
-  ocrCostUsd?: number;
-};
+const MIN_USABLE_FRAMES = 2;
 
 function parseArgs(argv: string[]) {
   const [handle, ...rest] = argv;
   if (!handle) {
-    console.error('Usage: extract-burned-in-titles <handle> [--frames N] [--crop 0.5]');
+    console.error('Usage: extract-burned-in-titles <handle> [--recheck N]');
     process.exit(1);
   }
-  let frames: number | null = null; // null = auto-scale per video to cover its full duration
-  let crop = DEFAULT_CROP_TOP_FRACTION;
+  let recheck: number | null = null;
   for (let i = 0; i < rest.length; i++) {
-    if (rest[i] === '--frames') frames = parseInt(rest[++i], 10);
-    else if (rest[i] === '--crop') crop = parseFloat(rest[++i]);
+    if (rest[i] === '--recheck') recheck = parseInt(rest[++i], 10);
   }
-  return { handle, frames, crop };
+  return { handle, recheck };
 }
 
-// Frame count must cover the whole clip, not just its first ~16s, or a title
-// change late in a longer video is invisible to the OCR pass.
-function frameCountFor(durationSec: number | null, override: number | null): number {
-  if (override !== null) return override;
-  const seconds = durationSec ?? 16;
-  return Math.min(MAX_FRAMES, Math.max(MIN_FRAMES, Math.ceil(seconds / SECONDS_PER_FRAME)));
-}
-
-function csvEscape(s: string): string {
-  return `"${s.replace(/"/g, '""')}"`;
-}
-
-async function emitCsv(dir: string, handle: string, manifest: ManifestEntry[]) {
-  const rows = manifest.filter((e) => e.status === 'included');
-  const header =
-    'video_id,date_posted,platform,creator_handle,video_url,burned_in_title,caption,views,likes,comments,shares,saves,duration_sec,niche,hook_family,notes';
-  const lines = rows.map((r) =>
-    [
-      '', // video_id — assigned when per-creator CSVs are merged into the final dataset
-      r.postedAt ?? '',
-      'reels',
-      handle,
-      r.permalink,
-      csvEscape(r.burnedInTitle ?? ''),
-      csvEscape(r.caption ?? ''),
-      r.views ?? '',
-      r.likes ?? '',
-      r.comments ?? '',
-      '', // shares — private analytics, unscrapable
-      '', // saves — private analytics, unscrapable
-      r.durationSec ?? '',
-      'luxury-menswear',
-      '', // hook_family — assigned by the importer
-      '',
-    ].join(','),
-  );
-  const csvPath = path.join(dir, `${handle}.csv`);
-  // UTF-8 BOM: without it, Excel ignores the system locale and mangles any
-  // multi-byte character (emoji, smart quotes) on open — the data itself is
-  // correct either way, this is purely so Excel renders it correctly.
-  const BOM = '\uFEFF';
-  await fs.writeFile(csvPath, BOM + [header, ...lines].join('\n') + '\n');
-  console.log(`Wrote ${rows.length} included rows to ${csvPath}`);
+async function readPass(
+  videoBytes: Buffer,
+  durationSec: number | null,
+  offset: number | undefined,
+): Promise<{ pass: OcrPass; costUsd: number; frames: number } | null> {
+  const count = frameCountFor(durationSec);
+  const interval = intervalFor(durationSec, count);
+  const jpegs = await extractFrames(videoBytes, count, {
+    intervalSec: interval,
+    offsetSec: offset,
+  });
+  if (jpegs.length < MIN_USABLE_FRAMES) return null;
+  const r = await transcribeBurnedInTitle(jpegs);
+  return {
+    pass: {
+      primaryTitle: r.primaryTitle,
+      additionalTitles: r.additionalTitles,
+      noTextFound: r.noTextFound,
+      framesWithTitle: r.framesWithTitle,
+      totalFrames: r.totalFrames,
+      captionsPresent: r.captionsPresent,
+      partialReveal: r.partialReveal,
+      uncertain: r.uncertain,
+    },
+    costUsd: r.costUsd,
+    frames: jpegs.length,
+  };
 }
 
 async function main() {
   loadEnvLocal();
   requireEnv(['ANTHROPIC_API_KEY']);
 
-  const { handle, frames: frameOverride, crop } = parseArgs(process.argv.slice(2));
+  const { handle, recheck } = parseArgs(process.argv.slice(2));
   const dir = path.join(process.cwd(), 'datasets', 'raw', handle);
-  const manifestPath = path.join(dir, 'manifest.json');
-  const manifest: ManifestEntry[] = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+  const manifest = await loadManifest(dir);
 
-  const pending = manifest.filter((e) => e.status === 'scraped' && e.videoPath);
+  // Default: only untouched rows. --recheck: an already-processed sample,
+  // chosen deterministically so the same 20 videos are picked every run.
+  const pending = recheck
+    ? manifest.filter((e) => e.status === 'included' && e.videoPath)
+        .filter((_, i) => i % 4 === 0)
+        .slice(0, recheck)
+    : manifest.filter((e) => e.status === 'scraped' && e.videoPath);
+
   console.log(
-    `${pending.length} videos to OCR (of ${manifest.length} total manifest entries). frames=${frameOverride ?? 'auto (scaled to duration)'} cropTopFraction=${crop}`,
+    `${pending.length} videos to process for @${handle}` +
+      (recheck ? ' (RECHECK — manifest will not be modified)' : ''),
   );
 
   let totalCost = 0;
-  let included = 0;
-  let noTitle = 0;
-  let multiTitle = 0;
+  let escalations = 0;
   let failed = 0;
+  const counts = new Map<string, number>();
+  const review: Array<{ e: ManifestEntry; p1: OcrPass; p2: OcrPass | null; status: string }> = [];
+  const recheckDiffs: string[] = [];
 
   for (const entry of pending) {
     const videoPath = path.join(dir, entry.videoPath!);
     try {
       const videoBytes = await fs.readFile(videoPath);
-      const frameCount = frameCountFor(entry.durationSec, frameOverride);
-      const jpegs = await extractFrames(videoBytes, frameCount, { cropTopFraction: crop });
-      const result = await transcribeBurnedInTitle(jpegs);
-      totalCost += result.costUsd;
-      entry.ocrCostUsd = result.costUsd;
 
-      if (result.noTextFound || !result.primaryTitle) {
-        entry.status = 'excluded_no_title';
-        noTitle++;
-      } else if (result.additionalTitles.length > 0) {
-        entry.status = 'excluded_multi_title';
-        entry.burnedInTitle = result.primaryTitle;
-        entry.additionalTitles = result.additionalTitles;
-        multiTitle++;
-      } else {
-        entry.status = 'included';
-        entry.burnedInTitle = result.primaryTitle;
-        included++;
+      const first = await readPass(videoBytes, entry.durationSec, undefined);
+      if (!first) {
+        if (!recheck) {
+          entry.status = 'needs_review_too_short';
+          await saveManifest(dir, manifest);
+        }
+        counts.set('needs_review_too_short', (counts.get('needs_review_too_short') ?? 0) + 1);
+        console.log(`  ${entry.shortcode}: needs_review_too_short`);
+        continue;
       }
-      console.log(`  ${entry.shortcode}: ${entry.status}${entry.burnedInTitle ? ` — "${entry.burnedInTitle}"` : ''}`);
+      totalCost += first.costUsd;
+
+      let second: Awaited<ReturnType<typeof readPass>> = null;
+      if (escalationReason(first.pass) !== null) {
+        const count = frameCountFor(entry.durationSec);
+        const offset = escalationOffsetFor(intervalFor(entry.durationSec, count));
+        second = await readPass(videoBytes, entry.durationSec, offset);
+        if (second) {
+          totalCost += second.costUsd;
+          escalations++;
+        }
+      }
+
+      const outcome = resolveOcrOutcome(first.pass, second?.pass ?? null);
+      counts.set(outcome.status, (counts.get(outcome.status) ?? 0) + 1);
+
+      if (recheck) {
+        const same = titlesAgree(entry.burnedInTitle ?? null, outcome.burnedInTitle ?? null);
+        if (!same || outcome.status !== 'included') {
+          recheckDiffs.push(
+            `  ${entry.shortcode}\n    stored: ${JSON.stringify(entry.burnedInTitle)}\n    now:    ${JSON.stringify(outcome.burnedInTitle)} (${outcome.status})`,
+          );
+        }
+        console.log(`  ${entry.shortcode}: ${outcome.status}${same ? ' (match)' : ' (DIFFERS)'}`);
+        continue;
+      }
+
+      entry.status = outcome.status;
+      entry.burnedInTitle = outcome.burnedInTitle;
+      entry.additionalTitles = outcome.additionalTitles;
+      entry.titleFrameRatio = outcome.titleFrameRatio;
+      entry.partialReveal = outcome.partialReveal;
+      entry.captionsPresent = outcome.captionsPresent;
+      entry.escalated = outcome.escalated;
+      entry.escalationReason = outcome.escalationReason;
+      entry.ocrCostUsd = first.costUsd + (second?.costUsd ?? 0);
+      entry.ocrPasses = second ? [first.pass, second.pass] : [first.pass];
+
+      if (outcome.status.startsWith('needs_review')) {
+        review.push({ e: entry, p1: first.pass, p2: second?.pass ?? null, status: outcome.status });
+      }
+
+      console.log(
+        `  ${entry.shortcode}: ${outcome.status}` +
+          (outcome.burnedInTitle ? ` — "${outcome.burnedInTitle}"` : '') +
+          (outcome.escalated ? ` [escalated: ${outcome.escalationReason}]` : ''),
+      );
+
+      // Write after every video so a crash loses at most one video's work.
+      await saveManifest(dir, manifest);
     } catch (e) {
-      console.error(`  ${entry.shortcode}: FAILED — ${(e as Error).message}`);
       failed++;
+      console.error(`  ${entry.shortcode}: FAILED — ${(e as Error).message}`);
     }
-    // Write back after every video so a crash mid-run doesn't lose progress.
-    await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
   }
 
-  console.log(
-    `\nDone. included=${included} excluded_no_title=${noTitle} excluded_multi_title=${multiTitle} failed=${failed}`,
-  );
-  console.log(`Claude vision cost this run: $${totalCost.toFixed(4)}`);
+  console.log('\n─── Report ───');
+  for (const [status, n] of [...counts.entries()].sort()) console.log(`  ${status.padEnd(28)} ${n}`);
+  const rate = pending.length > 0 ? (escalations / pending.length) * 100 : 0;
+  console.log(`  ${'escalation rate'.padEnd(28)} ${rate.toFixed(0)}% (${escalations}/${pending.length})`);
+  if (rate < 10 || rate > 35) {
+    console.log('  ⚠ Outside the 10–35% acceptance range — inspect before trusting this batch.');
+  }
+  console.log(`  ${'failed'.padEnd(28)} ${failed}`);
+  console.log(`  ${'cost'.padEnd(28)} $${totalCost.toFixed(4)}`);
 
-  await emitCsv(dir, handle, manifest);
+  if (review.length > 0) {
+    console.log('\n─── Needs review ───');
+    for (const r of review) {
+      console.log(`\n  ${r.e.shortcode}  [${r.status}]  ${r.e.permalink}`);
+      console.log(`    pass 1: ${JSON.stringify(r.p1.primaryTitle)} frames=${r.p1.framesWithTitle.length}/${r.p1.totalFrames} extra=${JSON.stringify(r.p1.additionalTitles)} uncertain=${r.p1.uncertain}`);
+      if (r.p2) {
+        console.log(`    pass 2: ${JSON.stringify(r.p2.primaryTitle)} frames=${r.p2.framesWithTitle.length}/${r.p2.totalFrames} extra=${JSON.stringify(r.p2.additionalTitles)} uncertain=${r.p2.uncertain}`);
+      }
+    }
+  }
+
+  if (recheck) {
+    console.log(`\n─── Recheck: ${recheckDiffs.length}/${pending.length} differ ───`);
+    for (const d of recheckDiffs) console.log(d);
+    console.log(
+      recheckDiffs.length >= 2
+        ? '\n  ⚠ 2 or more differ — re-run the full set for this creator.'
+        : '\n  ✓ Under the threshold — existing rows can stand.',
+    );
+  }
 }
 
 main().catch((e) => {
