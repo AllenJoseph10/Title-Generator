@@ -24,6 +24,7 @@ import {
   titlesAgree,
   type OcrPass,
 } from './lib/ocr-decisions';
+import { parseRecheckValue, InvalidArgError } from './lib/cli-args';
 import { extractFrames } from '../lib/media/frames';
 import { transcribeBurnedInTitle } from '../lib/providers/anthropic/burned-in-title';
 
@@ -37,7 +38,17 @@ function parseArgs(argv: string[]) {
   }
   let recheck: number | null = null;
   for (let i = 0; i < rest.length; i++) {
-    if (rest[i] === '--recheck') recheck = parseInt(rest[++i], 10);
+    if (rest[i] === '--recheck') {
+      try {
+        recheck = parseRecheckValue(rest[++i]);
+      } catch (e) {
+        if (e instanceof InvalidArgError) {
+          console.error(e.message);
+          process.exit(1);
+        }
+        throw e;
+      }
+    }
   }
   return { handle, recheck };
 }
