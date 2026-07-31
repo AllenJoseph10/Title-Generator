@@ -27,8 +27,10 @@ Open in Excel, Numbers, or Google Sheets. Each row = one published short-form vi
 |---|---|
 | `caption` | The post caption (under the video). Useful but not critical. |
 | `niche` | Default `luxury-menswear`. Change if a video is more lifestyle/finance. |
-| `hook_family` | **Leave blank.** The model will auto-classify into one of: visceral_specificity, contrarian_truth, mystery_loop, asymmetry_insight, status_aspiration. |
+| `hook_family` | **Leave blank.** The importer auto-classifies into one of: `relatable_pov`, `setup_trivial_reveal`, `listicle_reveal`, `reaction_humblebrag`, `transformation_tease` (see `lib/hooks/taxonomy.ts`). |
 | `notes` | Anything weird — collab post, sponsored, format experiment, etc. |
+| `visual_description` | **Auto-generated.** A short factual description of what the video shows, produced by `npm run describe:videos`. Do not fill in by hand — it must come from the same vision prompt the app uses at query time, or retrieval degrades. |
+| `notes` | Anything unusual. `partial_reveal` is set automatically when the burned-in title animated in rather than appearing complete. |
 
 ### Targets
 

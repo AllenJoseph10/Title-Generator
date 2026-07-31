@@ -11,7 +11,8 @@
     "test:watch": "vitest",
     "scrape:instagram": "tsx scripts/scrape-instagram.ts",
     "extract:titles": "tsx scripts/extract-burned-in-titles.ts",
-    "describe:videos": "tsx --conditions=react-server scripts/describe-videos.ts"
+    "describe:videos": "tsx --conditions=react-server scripts/describe-videos.ts",
+    "merge:dataset": "tsx scripts/merge-dataset.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",
