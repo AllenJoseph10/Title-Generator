@@ -57,6 +57,14 @@ export function coverageOf(p: OcrPass): number {
 export function escalationReason(p: OcrPass): string | null {
   if (p.uncertain) return 'uncertain';
   if (p.noTextFound) return 'no_title_claim';
+  // A pass can claim a title exists (noTextFound: false) yet carry no usable
+  // primaryTitle — the provider maps an empty/whitespace-only string to null
+  // even when noTextFound is false (see lib/providers/anthropic/burned-in-title.ts).
+  // That combination is incoherent and must never be trusted enough to reach
+  // `included` with no title on it. Treated the same as no_title_claim just
+  // above: confirm with a second read rather than discarding or accepting
+  // pass 1's word for it (D5's "confirmation is cheap" — this is rarer still).
+  if (p.primaryTitle === null) return 'title_missing_despite_claim';
   if (p.additionalTitles.length > 0) return 'multi_title_claim';
   if (p.framesWithTitle.length <= MIN_PERSISTENCE_FRAMES) return 'low_frame_coverage';
   if (p.captionsPresent && coverageOf(p) < AMBIGUOUS_COVERAGE) return 'captions_ambiguous';
@@ -74,6 +82,15 @@ export function resolveOcrOutcome(pass1: OcrPass, pass2: OcrPass | null): OcrOut
 
   // No escalation: pass 1's evidence was unambiguous by definition.
   if (pass2 === null) {
+    // Defense in depth, redundant with the escalationReason() check above
+    // under the normal calling convention (a pass this incoherent always
+    // escalates, so pass2 should never be null here for it in practice).
+    // Kept anyway so this function can never emit `included` with a missing
+    // title even if called out of step with escalationReason() — a bug here
+    // silently corrupts the dataset, so this invariant is enforced twice.
+    if (!pass1.noTextFound && pass1.primaryTitle === null) {
+      return { ...base, status: 'needs_review_disagreement' };
+    }
     return { ...base, status: 'included', burnedInTitle: pass1.primaryTitle ?? undefined };
   }
 

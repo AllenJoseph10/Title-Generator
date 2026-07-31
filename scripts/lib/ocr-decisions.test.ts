@@ -83,6 +83,14 @@ describe('escalationReason', () => {
   it('does not escalate when captions are present but the title is clearly persistent', () => {
     expect(escalationReason(pass({ captionsPresent: true }))).toBeNull();
   });
+
+  it('escalates an incoherent read: noTextFound false but no usable primaryTitle', () => {
+    // The provider maps an empty/whitespace-only title to null even when
+    // noTextFound is false — this must never be trusted enough to reach
+    // `included` with no title on it.
+    expect(escalationReason(pass({ noTextFound: false, primaryTitle: null })))
+      .toBe('title_missing_despite_claim');
+  });
 });
 
 describe('resolveOcrOutcome', () => {
@@ -156,5 +164,28 @@ describe('resolveOcrOutcome', () => {
     const out = resolveOcrOutcome(pass({ partialReveal: true, captionsPresent: true }), null);
     expect(out.partialReveal).toBe(true);
     expect(out.captionsPresent).toBe(true);
+  });
+
+  it('never includes a reading that claims a title exists but carries none (unescalated)', () => {
+    // Defense-in-depth: even if called with pass2 === null (which should not
+    // happen for this case under the normal calling convention, since
+    // escalationReason() now escalates it), the outcome must not be
+    // `included` with an empty title.
+    const incoherent = pass({ noTextFound: false, primaryTitle: null });
+    const out = resolveOcrOutcome(incoherent, null);
+    expect(out.status).not.toBe('included');
+    expect(out.burnedInTitle).toBeUndefined();
+  });
+
+  it('never includes an incoherent read even when a confirming second pass also finds nothing usable', () => {
+    const incoherent = pass({ noTextFound: false, primaryTitle: null });
+    const out = resolveOcrOutcome(incoherent, incoherent);
+    expect(out.status).not.toBe('included');
+  });
+
+  it('routes to review, not included, when an incoherent pass 1 disagrees with a real pass 2 title', () => {
+    const incoherent = pass({ noTextFound: false, primaryTitle: null });
+    const out = resolveOcrOutcome(incoherent, pass({ primaryTitle: 'A real title' }));
+    expect(out.status).toBe('needs_review_disagreement');
   });
 });
