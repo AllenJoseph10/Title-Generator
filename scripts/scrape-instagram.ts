@@ -30,7 +30,9 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { Dirent } from 'node:fs';
 import { loadEnvLocal, requireEnv } from './lib/load-env';
+import { loadManifest, saveManifest, type ManifestEntry } from './lib/manifest';
 
 const ACTOR_ID = 'apify~instagram-reel-scraper';
 const DEFAULT_MAX_DURATION_SEC = 60;
@@ -221,30 +223,12 @@ async function downloadVideo(url: string, destPath: string): Promise<void> {
   await fs.writeFile(destPath, buf);
 }
 
-type ManifestEntry = NormalizedPost & {
-  status: string;
-  videoPath?: string;
-  burnedInTitle?: string;
-  additionalTitles?: string[];
-  ocrCostUsd?: number;
-  outlierMultiplier?: number;
-  viewsPerDay?: number;
-  rank?: 'top' | 'bottom'; // set in --mode top-bottom; useful later for the eval harness
-  duplicateOfHandle?: string; // set when excluded_duplicate — which creator already has this post
-};
-
-async function loadManifest(dir: string): Promise<ManifestEntry[]> {
-  try {
-    const text = await fs.readFile(path.join(dir, 'manifest.json'), 'utf8');
-    return JSON.parse(text) as ManifestEntry[];
-  } catch {
-    return [];
-  }
-}
-
-async function saveManifest(dir: string, entries: ManifestEntry[]): Promise<void> {
-  await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(entries, null, 2));
-}
+// ManifestEntry, loadManifest, and saveManifest are the shared versions from
+// ./lib/manifest — this script's fields (NormalizedPost + status/videoPath/
+// burnedInTitle/additionalTitles/ocrCostUsd/outlierMultiplier/viewsPerDay/
+// rank/duplicateOfHandle) are a strict subset of the shared type, so reusing
+// it costs nothing and gets the atomic-write + loud-on-corruption behavior
+// for free instead of duplicating (and re-diverging from) it here.
 
 // Instagram shortcodes are unique per post. A shortcode already selected under
 // a DIFFERENT creator's manifest means that creator's profile reshared someone
@@ -256,23 +240,21 @@ const SELECTED_STATUSES = new Set(['scraped', 'included', 'excluded_no_title', '
 
 async function loadCrossCreatorShortcodes(rawRoot: string, excludeHandle: string): Promise<Map<string, string>> {
   const result = new Map<string, string>();
-  let handles: string[];
+  let dirents: Dirent[];
   try {
-    handles = await fs.readdir(rawRoot);
+    dirents = await fs.readdir(rawRoot, { withFileTypes: true });
   } catch {
     return result;
   }
-  for (const handle of handles) {
-    if (handle === excludeHandle) continue;
-    let entries: ManifestEntry[];
-    try {
-      entries = JSON.parse(await fs.readFile(path.join(rawRoot, handle, 'manifest.json'), 'utf8'));
-    } catch {
-      continue;
-    }
+  for (const dirent of dirents) {
+    if (!dirent.isDirectory() || dirent.name === excludeHandle) continue;
+    // loadManifest throws on a genuinely corrupt manifest (not just a missing
+    // one) — deliberately not swallowed here. A silently-skipped corrupt
+    // manifest would let a cross-creator duplicate slip through undetected.
+    const entries = await loadManifest(path.join(rawRoot, dirent.name));
     for (const e of entries) {
       if (!SELECTED_STATUSES.has(e.status)) continue;
-      if (!result.has(e.shortcode)) result.set(e.shortcode, handle);
+      if (!result.has(e.shortcode)) result.set(e.shortcode, dirent.name);
     }
   }
   return result;
