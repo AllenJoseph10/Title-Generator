@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "scrape:instagram": "tsx scripts/scrape-instagram.ts",
     "extract:titles": "tsx scripts/extract-burned-in-titles.ts"
   },
@@ -39,6 +41,7 @@
     "postcss": "^8.5.15",
     "tailwindcss": "^3.4.19",
     "tsx": "^4.23.1",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^3.2.7"
   }
 }
