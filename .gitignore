@@ -15,6 +15,8 @@ vercel recovery-codes.txt
 *recovery-codes*
 *.pem
 *.key
+# Briefs/specs handed over as documents may embed live credentials
+*.docx
 
 # Datasets — never commit raw creator content
 Will Wade Dataset/
@@ -22,6 +24,9 @@ Will Wade Dataset/
 */dataset/
 *.mp4
 *.mov
+
+# Instagram scrape working cache (manifests, debug samples) — not the final dataset
+datasets/raw/
 
 # Editor / OS
 .DS_Store

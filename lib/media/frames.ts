@@ -5,18 +5,35 @@ import { withTempVideoFile } from './temp-file';
 const JPEG_SOI = Buffer.from([0xff, 0xd8]);
 const JPEG_EOI = Buffer.from([0xff, 0xd9]);
 
-export async function extractFrames(input: Buffer, count: number): Promise<Buffer[]> {
+export type ExtractFramesOptions = {
+  // Keep only the top portion of each sampled frame (e.g. 0.5 = top half).
+  // Useful for isolating burned-in title overlays from unrelated content lower in frame.
+  cropTopFraction?: number;
+};
+
+export async function extractFrames(
+  input: Buffer,
+  count: number,
+  opts: ExtractFramesOptions = {},
+): Promise<Buffer[]> {
   if (!ffmpegPath) {
     throw new Error('ffmpeg-static did not resolve a binary path on this platform');
   }
   if (count < 1) throw new Error(`count must be >= 1 (got ${count})`);
+  const { cropTopFraction } = opts;
+  if (cropTopFraction !== undefined && (cropTopFraction <= 0 || cropTopFraction > 1)) {
+    throw new Error(`cropTopFraction must be in (0, 1] (got ${cropTopFraction})`);
+  }
 
   return withTempVideoFile(input, async (filePath) => {
+    const cropFilter = cropTopFraction !== undefined && cropTopFraction < 1
+      ? `crop=iw:ih*${cropTopFraction}:0:0,`
+      : '';
     const args = [
       '-hide_banner',
       '-loglevel', 'error',
       '-i', filePath,
-      '-vf', `fps=1/2,scale=720:-2`,
+      '-vf', `${cropFilter}fps=1/2,scale=720:-2`,
       '-frames:v', String(count),
       '-f', 'image2pipe',
       '-vcodec', 'mjpeg',
