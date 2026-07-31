@@ -18,6 +18,7 @@ import { loadEnvLocal, requireEnv } from './lib/load-env';
 import { loadManifest, saveManifest, type ManifestEntry } from './lib/manifest';
 import { frameCountFor, intervalFor, escalationOffsetFor } from './lib/frame-plan';
 import {
+  coverageOf,
   escalationReason,
   resolveOcrOutcome,
   titlesAgree,
@@ -152,7 +153,21 @@ async function main() {
           continue;
         }
         console.log(`  ${entry.shortcode}: ${status} (escalation warranted [${escalation}], pass 2 unreadable)`);
+        // Persist pass 1's evidence even though this row is quarantined, not
+        // accepted — an auditor reads manifest.json, not console scrollback, and
+        // for a multi_title_claim escalation reason, additionalTitles here is the
+        // entire explanation for the quarantine. burnedInTitle is evidence only:
+        // every consumer of this manifest must gate on status === 'included'
+        // before treating a title as usable (see report — this mirrors how
+        // resolveOcrOutcome itself already sets burnedInTitle on non-included
+        // statuses like excluded_multi_title and needs_review_single_frame).
         entry.status = status;
+        entry.burnedInTitle = first.pass.primaryTitle ?? undefined;
+        entry.additionalTitles = first.pass.additionalTitles;
+        entry.titleFrameRatio = coverageOf(first.pass);
+        entry.captionsPresent = first.pass.captionsPresent;
+        entry.partialReveal = first.pass.partialReveal;
+        entry.escalated = true; // an escalation was attempted — it just didn't complete
         entry.escalationReason = escalation;
         entry.ocrCostUsd = first.costUsd;
         entry.ocrPasses = [first.pass];
