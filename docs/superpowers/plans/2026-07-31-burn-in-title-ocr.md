@@ -857,10 +857,14 @@ In the same file, replace the block from `const out = toolUse.input as ...` to t
 }
 ```
 
-- [ ] **Step 4: Verify typecheck fails informatively, then passes**
+- [ ] **Step 4: Verify typecheck**
 
 Run: `npm run typecheck`
-Expected: errors in `scripts/extract-burned-in-titles.ts` — it still destructures the old result shape. That file is rewritten in Task 5; the errors confirm the contract changed. Note them and continue.
+Expected: no output, exit 0.
+
+The schema change is purely **additive** — the existing `scripts/extract-burned-in-titles.ts` reads only `costUsd`, `noTextFound`, `primaryTitle`, and `additionalTitles`, all of which the new type still carries. Adding the evidence fields breaks no consumer. Task 5 rewrites that script to start *using* the new fields, but nothing forces it to compile-error first.
+
+Do not add casts, `@ts-ignore`, or edits to `scripts/extract-burned-in-titles.ts` in this task.
 
 - [ ] **Step 5: Commit**
 
