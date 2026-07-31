@@ -4,6 +4,8 @@
 **Status:** Approved design, ready for implementation planning
 **Scope:** Stage 2 (OCR) and Stage 2b (description) of the dataset pipeline, plus the schema and retrieval changes descriptions require.
 
+**Revision (2026-07-31):** originally specified two verification passes on every video. Revised to a single pass with escalation on ambiguity, after the project owner confirmed that burned-in titles in this corpus are **static text, not animated**. See §4a for the reasoning and what changed.
+
 ---
 
 ## 1. Problem
@@ -27,9 +29,9 @@ A contaminated row is worse than a lost row. The pipeline is tuned to discard on
 Four defects in the existing implementation motivate this redesign:
 
 1. **The prompt is tuned to keep borderline videos.** It instructs the model to "be conservative about `additionalTitles`" — i.e. under-report multi-title videos. That is the opposite of the stated requirement.
-2. **Nothing verifies the answer.** One call, one self-reported verdict, no confidence, no cross-check. A paraphrased, case-normalised, or emoji-stripped title passes silently — and verbatim phrasing is precisely what the corpus exists to teach.
+2. **Nothing verifies the answer, and nothing is auditable.** One call, one self-reported verdict, no evidence, no confidence. A paraphrased, case-normalised, or emoji-stripped title passes silently — and verbatim phrasing is precisely what the corpus exists to teach.
 3. **The tool description contradicts the system prompt.** It states frames are "top-half-cropped"; the crop default is `undefined` (no crop), and the system prompt explicitly says position is not a reliable signal.
-4. **Slow captions can read as static.** At one frame per two seconds, a full-sentence caption held 3–4 seconds appears identical in two adjacent frames and can mimic a hook title.
+4. **Frame count scales with duration for no benefit.** A 60s clip costs twice a 30s clip. Once a static title has been observed across ~10 evenly-spread frames, further frames add nothing.
 
 ### The retrieval defect that descriptions fix
 
@@ -49,6 +51,7 @@ Storing a description per corpus row enables **description ↔ description** mat
 - Capture a short visual description per included video, in the same vocabulary the app produces at runtime.
 - Keep every stage independently resumable and crash-safe.
 - Produce an auditable trail: every decision, and the evidence for it, recorded in the manifest.
+- Spend verification budget only where the evidence is genuinely ambiguous.
 
 ## 3. Non-goals
 
@@ -63,17 +66,33 @@ Storing a description per corpus row enables **description ↔ description** mat
 
 | # | Decision | Rationale |
 |---|---|---|
-| D1 | **Two independent OCR passes per video**, quarantine on disagreement | Independent verification without manual review of every video; cost is negligible |
-| D2 | Passes use **different frame samples** (offset 0s and 1s) | Same frames would reproduce the same misreading twice; disagreement would never fire |
-| D3 | Agreement = **normalised exact match**; the stored string is pass A's **raw** text | Ignores casing/punctuation noise without sacrificing verbatim fidelity |
-| D4 | **Either** pass reporting multiple titles → discard immediately | Owner's rule is discard-on-multi; no quarantine needed |
-| D5 | Progressive/animated title reveal → **keep**, flagged `partialReveal` for spot-check | Same sentence building up is one title, but worth eyeballing |
-| D6 | Descriptions come from the **existing vision provider, unchanged** | Corpus descriptions must match runtime queries in vocabulary or embedding similarity degrades |
-| D7 | Descriptions are **single-pass, unverified** | Fuzzy free text consumed only by an embedding model; no exact-match requirement |
-| D8 | **Two embedding columns**: `embedding` (title) + `description_embedding` | Retrieval needs description-space; the prior needs title-space; one vector cannot serve both |
-| D9 | Model stays **`claude-sonnet-4-6`** | No mid-project model change; avoids the Sonnet 5 adaptive-thinking/`max_tokens` interaction; ~$2 difference |
-| D10 | **Full batch run**, reviewed via an end-of-run report | Fastest wall-clock; quarantine bucket makes a mid-run checkpoint unnecessary |
-| D11 | henryjwade's existing 93 rows: **20-video spot-check** with a fixed decision rule | Cheapest way to learn whether a full re-run is warranted |
+| D1 | **One OCR pass by default**, escalating to a second pass only on ambiguous evidence | Static titles make the persistence signal unambiguous on most videos; blanket double-reading pays for certainty already in hand |
+| D2 | **Fixed 10–12 frames spread evenly across the whole clip**, not one per 2s | Constant cost per video with full coverage; the old scheme paid double for 60s clips with no gain |
+| D3 | The escalation pass uses an **offset frame sample** so it sees different frames | Re-reading identical frames would reproduce the same misreading and never disagree |
+| D4 | Agreement (when escalated) = **normalised exact match**; stored string is pass 1's **raw** text | Ignores casing/punctuation noise without sacrificing verbatim fidelity |
+| D5 | A multi-title claim is **escalated before discarding**, not acted on immediately | A false positive here silently costs a corpus row; confirmation is cheap |
+| D6 | Progressive/animated title reveal → **keep**, flagged `partialReveal` for spot-check | Same sentence building up is one title. Rare in this corpus, but the branch is retained as a safety net |
+| D7 | Descriptions come from the **existing vision provider, unchanged** | Corpus descriptions must match runtime queries in vocabulary or embedding similarity degrades |
+| D8 | Descriptions are **single-pass, unverified** | Fuzzy free text consumed only by an embedding model; no exact-match requirement |
+| D9 | **Two embedding columns**: `embedding` (title) + `description_embedding` | Retrieval needs description-space; the prior needs title-space; one vector cannot serve both |
+| D10 | Model stays **`claude-sonnet-4-6`** | No mid-project model change; avoids the Sonnet 5 adaptive-thinking/`max_tokens` interaction; ~$2 difference |
+| D11 | **Full batch run**, reviewed via an end-of-run report | Fastest wall-clock; the quarantine bucket makes a mid-run checkpoint unnecessary |
+| D12 | henryjwade's existing 93 rows: **20-video spot-check** with a fixed decision rule | Cheapest way to learn whether a full re-run is warranted |
+
+### 4a. Why one pass, not two
+
+The original design ran every video twice on different frames and quarantined on disagreement. That was sized against a specific worry: a full-sentence speech caption held on screen for 3–4 seconds can look identical across two *adjacent* frames and mimic a static title.
+
+The project owner has since confirmed these titles are **static text, not animated**. That makes the discriminator far stronger than assumed:
+
+- A static hook title appears in **most or all** sampled frames — typically 9 or 10 of 10.
+- A speech caption line appears in **1 or 2** frames, because it is replaced as speech moves on.
+
+That is a ~10:1 separation, not a marginal call. The two-frame collision that motivated blanket verification cannot survive contact with ten frames spread across the whole clip. Paying to re-read the ~75% of videos where the evidence is that clear buys nothing.
+
+Verification is therefore retained precisely where evidence is weak or where a wrong call is expensive — see §5.4. Cost drops from ~$19 to ~$11 with no loss of protection on the cases that matter.
+
+**Accepted trade-off:** a confident, quiet error on an easy video will not be caught automatically. The manual audit in §10 is the backstop.
 
 ---
 
@@ -92,24 +111,32 @@ Stage 2b runs after Stage 2 so descriptions are only paid for on videos that sur
 
 ### 5.1 Frame sampling
 
-`extractFrames` gains an `offsetSec` option that inserts `-ss <offset>` **before** `-i` in the ffmpeg argument list (input seeking).
+Frames are sampled **evenly across the full clip duration**, at a fixed count:
 
-| | Offset | Frames sampled from a 30s clip |
+```
+frameCount = clamp(ceil(durationSec / 5), 10, 12)
+```
+
+The upper bound binds only at the pipeline's 60s duration cap; anything shorter takes the floor of 10.
+
+| Clip length | Frames | Spacing |
 |---|---|---|
-| Pass A | 0s | 0, 2, 4 … 28 (15 frames) |
-| Pass B | 1s | 1, 3, 5 … 29 (15 frames) |
+| 20s | 10 | every 2.0s |
+| 30s | 10 | every 3.0s |
+| 45s | 10 | every 4.5s |
+| 60s | 12 | every 5.0s |
 
-Zero frame overlap. This is what makes D1 meaningful: a caption held ~3 seconds may look static across frames 0 and 2, but will not also look static across frames 1 and 3, because the two samples catch it at different points in its lifecycle. A genuine hook title is identical in both samples because it does not change.
-
-Pass B's frame count is computed from `durationSec - offsetSec` so short clips do not over-request.
+This replaces `fps=1/2` with `fps=<frameCount>/<durationSec>`, so coverage always spans the whole clip and cost is roughly constant per video regardless of length. Ten frames is ample to establish persistence of static text, and remains dense enough to catch a second title in a multi-clip video — segments in this corpus run several seconds, so a distinct title occupies at least one sampled frame.
 
 Frames remain 720×1280. `claude-sonnet-4-6` caps vision at 1568px on the long edge; 1280 is under that, so no server-side downscaling occurs.
 
-**Edge case:** if either pass yields fewer than 2 frames (clips under ~4s), the video is routed to `needs_review_too_short` rather than compared — two frames is the floor for establishing persistence.
+`extractFrames` gains an `offsetSec` option that inserts `-ss <offset>` **before** `-i` (input seeking). The escalation pass (§5.4) uses `offset = spacing / 2`, placing its frames exactly between pass 1's — so the two passes share no frames and can genuinely disagree.
+
+**Edge case:** if a pass yields fewer than 2 frames (clips under ~4s), the video is routed to `needs_review_too_short` rather than judged — two frames is the floor for establishing persistence.
 
 ### 5.2 Tool contract
 
-`transcribe_title` gains evidence fields so each pass is auditable rather than a bare verdict:
+`transcribe_title` gains evidence fields. Under a single-pass default these are load-bearing, not decorative: they are what the escalation rule reads.
 
 ```ts
 {
@@ -126,10 +153,9 @@ Frames remain 720×1280. `claude-sonnet-4-6` caps vision at 1568px on the long e
 
 The stale `(top-half-cropped)` phrasing is removed from the tool description.
 
-**On `framesWithTitle`:** it is deliberately *not* used as a high coverage threshold. Many legitimate hook titles are shown only for the first 3–5 seconds and then dropped, which at 2-second sampling is 2–3 frames out of 15; an 80%-coverage rule would systematically discard exactly those. It is used two narrower ways:
+`titleFrameRatio = framesWithTitle.length / totalFrames` is derived and stored on every row.
 
-- a hard route-to-review at **exactly one frame**, where persistence cannot be established at all
-- otherwise as a stored ratio (`titleFrameRatio`) used to sort the spot-check queue
+**On thresholds:** `titleFrameRatio` is deliberately not used as a high acceptance bar. Some legitimate hook titles are shown only for the first few seconds and then dropped, which at 10-frame sampling is 1–2 frames; an 80%-coverage rule would systematically discard exactly those. It is used only to *trigger review*, never to silently reject.
 
 ### 5.3 Prompt changes
 
@@ -140,38 +166,54 @@ The stale `(top-half-cropped)` phrasing is removed from the tool description.
 3. **Add the partial-reveal rule.** A single sentence progressively revealed or animated in is **one** title: report the fullest version seen and set `partialReveal: true`. A genuinely different complete message later in the clip is `additionalTitles`.
 4. **Add evidence-field definitions** for `framesWithTitle`, `captionsPresent`, and `uncertain`.
 
-### 5.4 Agreement check
+### 5.4 Escalation rule
+
+Pass 1 runs on every video. A second pass runs **only** when pass 1's own evidence is weak, or when acting on pass 1 alone would be expensive to get wrong:
+
+| Trigger | Why |
+|---|---|
+| `uncertain === true` | The model itself declined to commit |
+| `framesWithTitle.length <= 2` | Persistence not established |
+| `captionsPresent && titleFrameRatio < 0.6` | The exact caption/title confusion case |
+| `additionalTitles` non-empty | Confirm before discarding — a false positive costs a row (D5) |
+| `noTextFound === true` | Confirm before discarding — guards a faint or short-lived title. Rare (~2% observed), so near-free |
+
+Everything else — a title seen in most frames, no uncertainty, no competing title — is accepted on one pass.
+
+Expected escalation rate: **15–25%**.
+
+### 5.5 Agreement check (escalated rows only)
 
 ```
 normalise(s) = lowercase → strip punctuation and emoji → collapse whitespace → trim
 
-agree  = normalise(passA.primaryTitle) === normalise(passB.primaryTitle)
-stored = passA.primaryTitle                    // raw, verbatim, unmodified
+agree  = normalise(pass1.primaryTitle) === normalise(pass2.primaryTitle)
+stored = pass1.primaryTitle                    // raw, verbatim, unmodified
 ```
 
 Normalisation is used **only** for the comparison. What is written to the manifest and CSV is always the raw string, so verbatim fidelity survives.
 
-### 5.5 Status model
+### 5.6 Status model
 
 | Status | Rule |
 |---|---|
-| `included` | Both passes agree, single title, title in ≥2 frames |
-| `excluded_multi_title` | **Either** pass returned a non-empty `additionalTitles` |
-| `excluded_no_title` | **Both** passes returned `noTextFound` |
-| `needs_review_disagreement` | Normalised titles differ, or one pass found a title and the other did not |
-| `needs_review_uncertain` | **Either** pass set `uncertain: true` |
-| `needs_review_single_frame` | Passes agree, but the title appeared in exactly one frame |
-| `needs_review_too_short` | Either pass yielded fewer than 2 frames |
+| `included` | Pass 1 unambiguous (no escalation trigger), **or** escalated and both passes agree on the same single title |
+| `excluded_multi_title` | Pass 1 reported extra titles **and** pass 2 confirmed them |
+| `excluded_no_title` | Pass 1 reported no title **and** pass 2 confirmed |
+| `needs_review_disagreement` | Escalation ran and the two passes conflict — including "pass 1 said multi, pass 2 said single" and "one found a title, the other didn't" |
+| `needs_review_uncertain` | Both passes set `uncertain: true` |
+| `needs_review_single_frame` | Passes agree on a title, but it appeared in ≤1 frame in both |
+| `needs_review_too_short` | Fewer than 2 frames extractable |
 
-Flags stored on `included` rows for spot-checking: `partialReveal`, `captionsPresent`, `titleFrameRatio`.
+Flags stored on `included` rows for spot-checking: `partialReveal`, `captionsPresent`, `titleFrameRatio`, `escalated`.
 
-Both passes' full raw responses are stored on every row regardless of outcome, so any decision can be re-audited without re-running the model.
-
-Existing statuses from Stage 1 (`scraped`, `excluded_duration`, `excluded_window`, `excluded_duplicate`, `excluded_low_views`, `excluded_rank`, `excluded_no_video`) are untouched.
+Every pass's full raw response is stored on every row regardless of outcome, so any decision can be re-audited without re-running the model.
 
 **Row selection.** By default Stage 2 reads only rows with `status: "scraped"`, so a normal re-run never disturbs completed work. The henryjwade spot-check (§8) needs to re-process rows that are already `included`, so the script takes an explicit `--recheck <n>` flag that selects an already-processed sample instead. In `--recheck` mode the script **reports** differences and does not write status changes — re-running the full set is a separate, deliberate invocation.
 
-### 5.6 Description stage
+Existing statuses from Stage 1 (`scraped`, `excluded_duration`, `excluded_window`, `excluded_duplicate`, `excluded_low_views`, `excluded_rank`, `excluded_no_video`) are untouched.
+
+### 5.7 Description stage
 
 A new script, `scripts/describe-videos.ts`, that for each `included` row:
 
@@ -184,7 +226,7 @@ A new script, `scripts/describe-videos.ts`, that for each `included` row:
 visualDescription = `${scene} ${visualHook}`;
 ```
 
-which is byte-for-byte the same concatenation `orchestrator.ts` uses to build `queryText`
+which is byte-for-byte the same concatenation `orchestrator.ts` uses to build `queryText`.
 
 Reusing the provider verbatim is load-bearing, not a convenience. Embedding similarity is only meaningful when both sides are drawn from the same distribution. A bespoke description prompt would describe the same video in different vocabulary than the runtime query, reintroducing a milder version of the exact mismatch this change exists to fix.
 
@@ -246,10 +288,10 @@ views,likes,comments,shares,saves,duration_sec,niche,hook_family,notes,visual_de
 
 ## 8. The henryjwade spot-check
 
-The existing 93 rows were produced under single-pass, conservative-prompt logic. Rather than re-running all of them blind:
+The existing 93 rows were produced under the old single-pass, conservative-prompt logic with no evidence fields. Rather than re-running all of them blind:
 
 1. Select 20 of the 93 (deterministic sample — every 4th `included` row by manifest order, so it is reproducible).
-2. Run both passes under the new pipeline via `--recheck 20`, which reports without mutating status (§5.5).
+2. Run them through the new pipeline via `--recheck 20`, which reports without mutating status (§5.6).
 3. Compare each result against the stored title using the same `normalise` function.
 
 **Decision rule, fixed in advance:**
@@ -257,24 +299,36 @@ The existing 93 rows were produced under single-pass, conservative-prompt logic.
 > If **≥2 of 20 (10%)** disagree with the stored title or change status → re-run all 93.
 > If **0–1** → keep the existing 93 as-is.
 
-Cost: ~$1.50.
+Cost: ~$1.
 
 ---
 
-## 9. Cost
+## 9. Cost and credentials
 
-`claude-sonnet-4-6` at $3.00/MTok input, $15.00/MTok output. 720×1280 frames ≈ 1,230 image tokens each.
+### 9.1 Estimate
+
+`claude-sonnet-4-6` at $3.00/MTok input, $15.00/MTok output. 720×1280 frames ≈ 1,230 image tokens each; ~10–12 frames plus prompt ≈ 14K input tokens per OCR call.
 
 | Item | Estimate |
 |---|---|
-| OCR, 2 passes × 108 B-roll videos | ~$12 |
-| Descriptions, ~90 included videos × 8 frames | ~$3 |
-| henryjwade spot-check, 20 videos × 2 passes | ~$1.50 |
-| Output tokens (512 cap × ~320 calls) | ~$2 |
+| OCR pass 1 — 108 B-roll videos | ~$4.50 |
+| OCR escalation — ~20% of them | ~$0.90 |
+| Descriptions — ~90 included videos × 8 frames | ~$2.90 |
+| henryjwade spot-check — 20 videos | ~$1.00 |
+| Output tokens (512 cap × ~230 calls) | ~$1.70 |
 | Embeddings (`text-embedding-3-small`, ~200 descriptions) | <$0.01 |
-| **Total** | **≈ $19** |
+| **Total** | **≈ $11** |
 
-A full henryjwade re-run, if the spot-check triggers one, adds ~$13.
+A full henryjwade re-run, if the spot-check triggers one, adds ~$4.50.
+
+### 9.2 Which key pays
+
+The scripts call `api.anthropic.com` directly using `ANTHROPIC_API_KEY` from `.env.local`. **That key's owner is billed** — this is unrelated to any Claude Code session used to develop the scripts.
+
+The key currently in `.env.local` was supplied in the builder brief and belongs to the **client**, who states it will be rotated once the project ends. Two implications:
+
+- The run above bills to the client unless the key is swapped.
+- Any re-run after project handover will fail once the key is rotated. If long-term re-runnability matters, substitute an own-account key — a one-line change in `.env.local`, no code impact.
 
 ---
 
@@ -283,11 +337,12 @@ A full henryjwade re-run, if the spot-check triggers one, adds ~$13.
 The stage is complete when:
 
 1. `npm run typecheck` and `npm run build` both pass.
-2. The end-of-run report prints counts per status, and lists every `needs_review_*` row with both passes' answers side by side.
-3. A manual audit of **10 `included` rows** confirms each stored title matches the video's on-screen text verbatim, and none is a speech caption.
-4. A manual audit of **all `needs_review_disagreement` rows** confirms the disagreements are genuine ambiguity rather than a prompt defect. A disagreement rate above ~20% indicates the prompt needs tuning before trusting the batch.
+2. The end-of-run report prints counts per status, the escalation rate, and lists every `needs_review_*` row with each pass's answer.
+3. A manual audit of **10 `included` rows** confirms each stored title matches the video's on-screen text verbatim, and none is a speech caption. Under a single-pass default this is the primary defence against a confident quiet error — it is not optional.
+4. A manual audit of **all `needs_review_disagreement` rows** confirms the disagreements are genuine ambiguity rather than a prompt defect.
 5. A manual audit of **5 `excluded_multi_title` rows** confirms they genuinely contain more than one hook title — this is the discard path, so a false positive here silently costs corpus rows.
-6. Spot-checking 5 `visual_description` values confirms they read as plausible descriptions of their videos and are in the same register as `VISION_SYSTEM_PROMPT` output.
+6. **The escalation rate is within 10–35%.** Far below suggests the triggers are not firing and the evidence fields are not being populated honestly; far above suggests the prompt is under-confident and should be tuned before trusting the batch.
+7. Spot-checking 5 `visual_description` values confirms they read as plausible descriptions of their videos and are in the same register as `VISION_SYSTEM_PROMPT` output.
 
 ---
 
@@ -295,9 +350,11 @@ The stage is complete when:
 
 | Risk | Mitigation |
 |---|---|
-| Both passes make the *same* mistake and agree | Different frame samples (D2) make correlated error much less likely, but not impossible. The manual audit in §10.3 is the backstop. |
-| Quarantine bucket is very large, making review costly | The pilot signal is §10.4: a disagreement rate above ~20% means tune the prompt and re-run rather than review 40 videos by hand. |
-| Descriptions drift in vocabulary from runtime queries | Provider and prompt are reused unchanged (D6); frame count matches `TARGET_FRAMES`. |
+| A confident, quiet single-pass error is never caught | Accepted trade-off of D1. The §10.3 manual audit of 10 included rows is the backstop; static titles make this class of error unlikely. |
+| Evidence fields are reported carelessly, so escalation never fires | §10.6 makes the escalation rate an explicit acceptance check rather than an incidental statistic. |
+| Both passes make the *same* mistake on an escalated row | Offset frame sampling (D3) means they never see the same frames, making correlated error unlikely but not impossible. |
+| 10 frames misses a second title in a long clip | Segments in this corpus run several seconds; at 5s spacing a distinct title occupies at least one frame. Multi-title claims are also escalated (D5), which re-samples at a different offset. |
+| Descriptions drift in vocabulary from runtime queries | Provider and prompt reused unchanged (D7); frame count matches `TARGET_FRAMES`. |
 | Migration applied too early empties retrieval | §6.3 — sequence the migration close to the import. |
 | Corpus lands under the 200-row floor after discards | Known and accepted. 93 + ~90 ≈ 183 expected. Raising the count means scraping more creators, which is a Stage 1 concern outside this design. |
 
