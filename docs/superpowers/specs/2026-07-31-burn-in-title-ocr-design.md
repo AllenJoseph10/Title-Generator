@@ -4,7 +4,9 @@
 **Status:** Approved design, ready for implementation planning
 **Scope:** Stage 2 (OCR) and Stage 2b (description) of the dataset pipeline, plus the schema and retrieval changes descriptions require.
 
-**Revision (2026-07-31):** originally specified two verification passes on every video. Revised to a single pass with escalation on ambiguity, after the project owner confirmed that burned-in titles in this corpus are **static text, not animated**. See §4a for the reasoning and what changed.
+**Revision 1 (2026-07-31):** originally specified two verification passes on every video. Revised to a single pass with escalation on ambiguity, after the project owner confirmed that burned-in titles in this corpus are **static text, not animated**. See §4a for the reasoning and what changed.
+
+**Revision 2 (2026-07-31):** costs recomputed against the real clip durations in the manifests, which corrected two errors and settled the model choice under a fixed budget. See §4b.
 
 ---
 
@@ -67,7 +69,7 @@ Storing a description per corpus row enables **description ↔ description** mat
 | # | Decision | Rationale |
 |---|---|---|
 | D1 | **One OCR pass by default**, escalating to a second pass only on ambiguous evidence | Static titles make the persistence signal unambiguous on most videos; blanket double-reading pays for certainty already in hand |
-| D2 | **Fixed 10–12 frames spread evenly across the whole clip**, not one per 2s | Constant cost per video with full coverage; the old scheme paid double for 60s clips with no gain |
+| D2 | OCR frames = `clamp(ceil(durationSec / 3), 8, 12)`, spread evenly across the clip | Guarantees ≥8 frames on the very short clips that dominate this corpus, while capping the few long ones. See §4b |
 | D3 | The escalation pass uses an **offset frame sample** so it sees different frames | Re-reading identical frames would reproduce the same misreading and never disagree |
 | D4 | Agreement (when escalated) = **normalised exact match**; stored string is pass 1's **raw** text | Ignores casing/punctuation noise without sacrificing verbatim fidelity |
 | D5 | A multi-title claim is **escalated before discarding**, not acted on immediately | A false positive here silently costs a corpus row; confirmation is cheap |
@@ -75,7 +77,7 @@ Storing a description per corpus row enables **description ↔ description** mat
 | D7 | Descriptions come from the **existing vision provider, unchanged** | Corpus descriptions must match runtime queries in vocabulary or embedding similarity degrades |
 | D8 | Descriptions are **single-pass, unverified** | Fuzzy free text consumed only by an embedding model; no exact-match requirement |
 | D9 | **Two embedding columns**: `embedding` (title) + `description_embedding` | Retrieval needs description-space; the prior needs title-space; one vector cannot serve both |
-| D10 | Model stays **`claude-sonnet-4-6`** | No mid-project model change; avoids the Sonnet 5 adaptive-thinking/`max_tokens` interaction; ~$2 difference |
+| D10 | **`claude-sonnet-4-6` for both stages**, all spend on the Anthropic account | Opus 4.8 would be stronger on the discrimination judgment, but costs $3.17 more against a fixed budget. See §4b |
 | D11 | **Full batch run**, reviewed via an end-of-run report | Fastest wall-clock; the quarantine bucket makes a mid-run checkpoint unnecessary |
 | D12 | henryjwade's existing 93 rows: **20-video spot-check** with a fixed decision rule | Cheapest way to learn whether a full re-run is warranted |
 
@@ -90,9 +92,31 @@ The project owner has since confirmed these titles are **static text, not animat
 
 That is a ~10:1 separation, not a marginal call. The two-frame collision that motivated blanket verification cannot survive contact with ten frames spread across the whole clip. Paying to re-read the ~75% of videos where the evidence is that clear buys nothing.
 
-Verification is therefore retained precisely where evidence is weak or where a wrong call is expensive — see §5.4. Cost drops from ~$19 to ~$11 with no loss of protection on the cases that matter.
+Verification is therefore retained precisely where evidence is weak or where a wrong call is expensive — see §5.4. This roughly halves OCR cost with no loss of protection on the cases that matter; final figures are in §9.1.
 
 **Accepted trade-off:** a confident, quiet error on an easy video will not be caught automatically. The manual audit in §10 is the backstop.
+
+### 4b. Two corrections from costing against real durations
+
+Revision 1 estimated cost from assumed clip lengths. Recomputing against the durations actually recorded in the manifests corrected two errors.
+
+**Correction 1 — the frame formula was tuned for the wrong distribution.** Revision 1 used `clamp(ceil(d/5), 10, 12)`, justified as "a 60s clip costs twice a 30s clip for no benefit." True in general, false here. The corpus is dominated by very short clips:
+
+| Duration | Videos (of 108) |
+|---|---|
+| 0–10s | 45 |
+| 10–15s | 33 |
+| 15–30s | 16 |
+| 30–45s | 11 |
+| 45–60s | 3 |
+
+Median clip is **11 seconds**; only 3 exceed 45s. So a floor of 10 frames *raised* the count on the 72% under 15s, making the "saving" a 23% increase — 1,084 frames versus the existing scheme's 883.
+
+The corrected formula `clamp(ceil(d/3), 8, 12)` totals 922 frames — within 4% of the current scheme — while fixing both tails: a 6s clip gets 8 frames instead of 4 (too little evidence to establish persistence), and a 58s clip gets 12 instead of 29 (wasteful).
+
+**Correction 2 — descriptions were under-counted by half.** Revision 1 costed descriptions for "~90 included videos." henryjwade's **93 existing rows also require descriptions** — they enter the same corpus and need the same `description_embedding` to be retrievable at all. The real figure is **~183 videos**.
+
+**Model choice under a fixed budget.** With the corrected figures, Opus 4.8 for OCR costs $7.93 against Sonnet's $4.76. On the same $3.17 the budget can instead buy 8-frame descriptions and retain the henryjwade spot-check. Opus is the better model for this judgment, but it is not worth surrendering validation of half the corpus to afford it. Descriptions stay at **8 frames** — matching `TARGET_FRAMES` at runtime — because description quality is what retrieval depends on and it is a single unverified pass with no re-run path.
 
 ---
 
@@ -114,19 +138,21 @@ Stage 2b runs after Stage 2 so descriptions are only paid for on videos that sur
 Frames are sampled **evenly across the full clip duration**, at a fixed count:
 
 ```
-frameCount = clamp(ceil(durationSec / 5), 10, 12)
+frameCount = clamp(ceil(durationSec / 3), 8, 12)
 ```
-
-The upper bound binds only at the pipeline's 60s duration cap; anything shorter takes the floor of 10.
 
 | Clip length | Frames | Spacing |
 |---|---|---|
-| 20s | 10 | every 2.0s |
+| 6s | 8 | every 0.75s |
+| 11s *(median)* | 8 | every 1.4s |
+| 24s | 8 | every 3.0s |
 | 30s | 10 | every 3.0s |
-| 45s | 10 | every 4.5s |
-| 60s | 12 | every 5.0s |
+| 45s | 12 | every 3.75s |
+| 58s | 12 | every 4.8s |
 
-This replaces `fps=1/2` with `fps=<frameCount>/<durationSec>`, so coverage always spans the whole clip and cost is roughly constant per video regardless of length. Ten frames is ample to establish persistence of static text, and remains dense enough to catch a second title in a multi-clip video — segments in this corpus run several seconds, so a distinct title occupies at least one sampled frame.
+This replaces `fps=1/2` with `fps=<frameCount>/<durationSec>`, so coverage always spans the whole clip. Across the 108 queued videos this totals **922 frames** — within 4% of the existing scheme's 883 — while removing both of that scheme's failure modes: too few frames on very short clips (a 6s clip currently gets 4), and wasted frames on long ones (a 58s clip currently gets 29). See §4b for the duration distribution this was fitted to.
+
+Eight frames is ample to establish persistence of static text, and remains dense enough to catch a second title in a multi-clip video — segments in this corpus run several seconds, so a distinct title occupies at least one sampled frame.
 
 Frames remain 720×1280. `claude-sonnet-4-6` caps vision at 1568px on the long edge; 1280 is under that, so no server-side downscaling occurs.
 
@@ -299,7 +325,7 @@ The existing 93 rows were produced under the old single-pass, conservative-promp
 > If **≥2 of 20 (10%)** disagree with the stored title or change status → re-run all 93.
 > If **0–1** → keep the existing 93 as-is.
 
-Cost: ~$1.
+Cost: ~$0.90.
 
 ---
 
@@ -307,19 +333,27 @@ Cost: ~$1.
 
 ### 9.1 Estimate
 
-`claude-sonnet-4-6` at $3.00/MTok input, $15.00/MTok output. 720×1280 frames ≈ 1,230 image tokens each; ~10–12 frames plus prompt ≈ 14K input tokens per OCR call.
+Both stages run on `claude-sonnet-4-6` at $3.00/MTok input, $15.00/MTok output. Basis: 720×1280 frames ≈ 1,229 image tokens each; ~750 tokens prompt + tool overhead per OCR call, ~600 per description call; ~200 output tokens per call in practice, well under the 512 cap. Frame counts computed from the actual durations in the manifests, not assumed.
 
-| Item | Estimate |
+| Item | Videos | Frames | Cost |
+|---|---|---|---|
+| OCR pass 1 + escalation @20% | 108 | 922 (+~184) | $4.76 |
+| henryjwade spot-check | 20 | ~176 | $0.87 |
+| Descriptions × 8 frames | 183 | 1,464 | $6.28 |
+| Embeddings (`text-embedding-3-small`) — **OpenAI key, not this budget** | 183 | — | <$0.01 |
+| **Total (Anthropic)** | | | **$11.91** |
+
+Conditionals, in order of likelihood:
+
+| | Cost |
 |---|---|
-| OCR pass 1 — 108 B-roll videos | ~$4.50 |
-| OCR escalation — ~20% of them | ~$0.90 |
-| Descriptions — ~90 included videos × 8 frames | ~$2.90 |
-| henryjwade spot-check — 20 videos | ~$1.00 |
-| Output tokens (512 cap × ~230 calls) | ~$1.70 |
-| Embeddings (`text-embedding-3-small`, ~200 descriptions) | <$0.01 |
-| **Total** | **≈ $11** |
+| Escalation lands at 35% rather than 20% (top of the §10.6 acceptance range) | +$0.59 |
+| One full OCR re-run of the 108, after the §10 audit finds a prompt defect | +$4.76 |
+| Full henryjwade re-run, if the §8 spot-check triggers it | +$4.21 |
 
-A full henryjwade re-run, if the spot-check triggers one, adds ~$4.50.
+**Budget position:** the account holds ~$20 against a planned spend of ~$12. The reserve is not slack — it is what makes a corrective re-run possible. A run that cannot be repeated forces importing a corpus already known to be wrong.
+
+**Spend in two stages.** Run OCR + spot-check first (~$5.63), complete the §10 audit, and only then run descriptions (~$6.28). A prompt defect is then discovered with ~$14 remaining rather than ~$8.
 
 ### 9.2 Which key pays
 
