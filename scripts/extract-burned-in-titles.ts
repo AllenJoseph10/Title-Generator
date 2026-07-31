@@ -25,6 +25,8 @@ import {
   type OcrPass,
 } from './lib/ocr-decisions';
 import { parseRecheckValue, InvalidArgError } from './lib/cli-args';
+import { ConsecutiveFailureTracker, CONSECUTIVE_FAILURE_LIMIT } from './lib/circuit-breaker';
+import { ProviderCallFailure } from './lib/provider-call-failure';
 import { extractFrames } from '../lib/media/frames';
 import { transcribeBurnedInTitle } from '../lib/providers/anthropic/burned-in-title';
 
@@ -65,7 +67,18 @@ async function readPass(
     offsetSec: offset,
   });
   if (jpegs.length < MIN_USABLE_FRAMES) return null;
-  const r = await transcribeBurnedInTitle(jpegs);
+  let r: Awaited<ReturnType<typeof transcribeBurnedInTitle>>;
+  try {
+    r = await transcribeBurnedInTitle(jpegs);
+  } catch (e) {
+    // A billed HTTP 200 with no tool_use block throws here — the request was
+    // charged but costUsd is never computed. Tag it so the caller can count
+    // "may have been billed" failures separately instead of under-reporting
+    // spend as if the call cost nothing.
+    throw new ProviderCallFailure(
+      `transcribeBurnedInTitle failed (may have been billed; cost not recorded): ${(e as Error).message}`,
+    );
+  }
   return {
     pass: {
       primaryTitle: r.primaryTitle,
@@ -104,141 +117,211 @@ async function main() {
   );
 
   let totalCost = 0;
-  let escalations = 0;
+  // Escalation ATTEMPTS — incremented whenever escalationReason() warrants a
+  // second pass, regardless of whether that second pass succeeds. The old
+  // code incremented only on success, making failed escalations invisible.
+  let escalationAttempts = 0;
+  let uncertainEscalations = 0;
+  const escalationTriggerCounts = new Map<string, number>();
+  // Rows that actually received a pass-1 verdict — the correct denominator
+  // for the escalation rate. Rows that errored (never got a verdict) or were
+  // too short (first === null, never entered escalationReason()) must not be
+  // counted here, or the rate is diluted by rows that were never judged.
+  let judgedRows = 0;
   let failed = 0;
+  let possiblyBilledFailures = 0;
   const counts = new Map<string, number>();
   const review: Array<{ e: ManifestEntry; p1: OcrPass; p2: OcrPass | null; status: string }> = [];
   const recheckDiffs: string[] = [];
+  const breaker = new ConsecutiveFailureTracker();
 
-  for (const entry of pending) {
+  // The per-video body. Early exits use `return` (not `continue`, as in the
+  // original inline loop) specifically so the calling loop's try/catch can
+  // tell success from failure uniformly — every early return here is a
+  // legitimate outcome (too-short clip, unresolved escalation, recheck diff),
+  // never a failure, and the circuit breaker below must reset on all of them.
+  async function processEntry(entry: ManifestEntry): Promise<void> {
     const videoPath = path.join(dir, entry.videoPath!);
-    try {
-      const videoBytes = await fs.readFile(videoPath);
+    const videoBytes = await fs.readFile(videoPath);
 
-      const first = await readPass(videoBytes, entry.durationSec, undefined);
-      if (!first) {
-        if (!recheck) {
-          entry.status = 'needs_review_too_short';
-          await saveManifest(dir, manifest);
-        }
-        counts.set('needs_review_too_short', (counts.get('needs_review_too_short') ?? 0) + 1);
-        console.log(`  ${entry.shortcode}: needs_review_too_short`);
-        continue;
-      }
-      totalCost += first.costUsd;
-
-      // null iff escalation is not warranted — this is the ONLY condition under
-      // which it is safe to later call resolveOcrOutcome(first.pass, null).
-      const escalation = escalationReason(first.pass);
-
-      let second: Awaited<ReturnType<typeof readPass>> = null;
-      if (escalation !== null) {
-        const count = frameCountFor(entry.durationSec);
-        const offset = escalationOffsetFor(intervalFor(entry.durationSec, count));
-        second = await readPass(videoBytes, entry.durationSec, offset);
-        if (second) {
-          totalCost += second.costUsd;
-          escalations++;
-        }
-      }
-
-      // DANGER — do not delete this guard. resolveOcrOutcome(pass, null) returns
-      // `included` UNCONDITIONALLY when pass 2 is null: it trusts the caller to pass
-      // null only when escalation was never warranted (escalation === null, above).
-      // If escalation WAS warranted but pass 2 could not be extracted (offset sample
-      // too short to yield MIN_USABLE_FRAMES), `second` is null here for a DIFFERENT
-      // reason — calling resolveOcrOutcome in that case would launder an already-
-      // untrustworthy pass-1 reading (e.g. a multi-title claim, which the project
-      // requires be discarded) into `included`, with no error and no escalation
-      // counted. So that case is handled here, before resolveOcrOutcome is ever
-      // called, and resolveOcrOutcome below is only reachable with a null pass 2
-      // when `escalation === null`.
-      if (escalation !== null && !second) {
-        const status = 'needs_review_too_short';
-        counts.set(status, (counts.get(status) ?? 0) + 1);
-        if (recheck) {
-          recheckDiffs.push(
-            `  ${entry.shortcode}\n    stored: ${JSON.stringify(entry.burnedInTitle)}\n    now:    pass 2 unreadable — escalation warranted [${escalation}] but could not be verified (${status})`,
-          );
-          console.log(`  ${entry.shortcode}: ${status} (DIFFERS — escalation warranted [${escalation}], pass 2 unreadable)`);
-          continue;
-        }
-        console.log(`  ${entry.shortcode}: ${status} (escalation warranted [${escalation}], pass 2 unreadable)`);
-        // Persist pass 1's evidence even though this row is quarantined, not
-        // accepted — an auditor reads manifest.json, not console scrollback, and
-        // for a multi_title_claim escalation reason, additionalTitles here is the
-        // entire explanation for the quarantine. burnedInTitle is evidence only:
-        // every consumer of this manifest must gate on status === 'included'
-        // before treating a title as usable (see report — this mirrors how
-        // resolveOcrOutcome itself already sets burnedInTitle on non-included
-        // statuses like excluded_multi_title and needs_review_single_frame).
-        entry.status = status;
-        entry.burnedInTitle = first.pass.primaryTitle ?? undefined;
-        entry.additionalTitles = first.pass.additionalTitles;
-        entry.titleFrameRatio = coverageOf(first.pass);
-        entry.captionsPresent = first.pass.captionsPresent;
-        entry.partialReveal = first.pass.partialReveal;
-        entry.escalated = true; // an escalation was attempted — it just didn't complete
-        entry.escalationReason = escalation;
-        entry.ocrCostUsd = first.costUsd;
-        entry.ocrPasses = [first.pass];
-        review.push({ e: entry, p1: first.pass, p2: null, status });
+    const first = await readPass(videoBytes, entry.durationSec, undefined);
+    if (!first) {
+      if (!recheck) {
+        entry.status = 'needs_review_too_short';
         await saveManifest(dir, manifest);
-        continue;
       }
+      counts.set('needs_review_too_short', (counts.get('needs_review_too_short') ?? 0) + 1);
+      console.log(`  ${entry.shortcode}: needs_review_too_short`);
+      return;
+    }
+    totalCost += first.costUsd;
+    judgedRows++;
 
-      const outcome = resolveOcrOutcome(first.pass, second?.pass ?? null);
-      counts.set(outcome.status, (counts.get(outcome.status) ?? 0) + 1);
+    // null iff escalation is not warranted — this is the ONLY condition under
+    // which it is safe to later call resolveOcrOutcome(first.pass, null).
+    const escalation = escalationReason(first.pass);
 
+    if (escalation !== null) {
+      escalationAttempts++;
+      escalationTriggerCounts.set(escalation, (escalationTriggerCounts.get(escalation) ?? 0) + 1);
+      if (escalation === 'uncertain') uncertainEscalations++;
+    }
+
+    let second: Awaited<ReturnType<typeof readPass>> = null;
+    if (escalation !== null) {
+      const count = frameCountFor(entry.durationSec);
+      const offset = escalationOffsetFor(intervalFor(entry.durationSec, count));
+      second = await readPass(videoBytes, entry.durationSec, offset);
+      if (second) {
+        totalCost += second.costUsd;
+      }
+    }
+
+    // DANGER — do not delete this guard. resolveOcrOutcome(pass, null) returns
+    // `included` UNCONDITIONALLY when pass 2 is null: it trusts the caller to pass
+    // null only when escalation was never warranted (escalation === null, above).
+    // If escalation WAS warranted but pass 2 could not be extracted (offset sample
+    // too short to yield MIN_USABLE_FRAMES), `second` is null here for a DIFFERENT
+    // reason — calling resolveOcrOutcome in that case would launder an already-
+    // untrustworthy pass-1 reading (e.g. a multi-title claim, which the project
+    // requires be discarded) into `included`, with no error and no escalation
+    // counted. So that case is handled here, before resolveOcrOutcome is ever
+    // called, and resolveOcrOutcome below is only reachable with a null pass 2
+    // when `escalation === null`.
+    if (escalation !== null && !second) {
+      const status = 'needs_review_too_short';
+      counts.set(status, (counts.get(status) ?? 0) + 1);
       if (recheck) {
-        const same = titlesAgree(entry.burnedInTitle ?? null, outcome.burnedInTitle ?? null);
-        if (!same || outcome.status !== 'included') {
-          recheckDiffs.push(
-            `  ${entry.shortcode}\n    stored: ${JSON.stringify(entry.burnedInTitle)}\n    now:    ${JSON.stringify(outcome.burnedInTitle)} (${outcome.status})`,
-          );
-        }
-        console.log(`  ${entry.shortcode}: ${outcome.status}${same ? ' (match)' : ' (DIFFERS)'}`);
-        continue;
+        recheckDiffs.push(
+          `  ${entry.shortcode}\n    stored: ${JSON.stringify(entry.burnedInTitle)}\n    now:    pass 2 unreadable — escalation warranted [${escalation}] but could not be verified (${status})`,
+        );
+        console.log(`  ${entry.shortcode}: ${status} (DIFFERS — escalation warranted [${escalation}], pass 2 unreadable)`);
+        return;
       }
-
-      entry.status = outcome.status;
-      entry.burnedInTitle = outcome.burnedInTitle;
-      entry.additionalTitles = outcome.additionalTitles;
-      entry.titleFrameRatio = outcome.titleFrameRatio;
-      entry.partialReveal = outcome.partialReveal;
-      entry.captionsPresent = outcome.captionsPresent;
-      entry.escalated = outcome.escalated;
-      entry.escalationReason = outcome.escalationReason;
-      entry.ocrCostUsd = first.costUsd + (second?.costUsd ?? 0);
-      entry.ocrPasses = second ? [first.pass, second.pass] : [first.pass];
-
-      if (outcome.status.startsWith('needs_review')) {
-        review.push({ e: entry, p1: first.pass, p2: second?.pass ?? null, status: outcome.status });
-      }
-
-      console.log(
-        `  ${entry.shortcode}: ${outcome.status}` +
-          (outcome.burnedInTitle ? ` — "${outcome.burnedInTitle}"` : '') +
-          (outcome.escalated ? ` [escalated: ${outcome.escalationReason}]` : ''),
-      );
-
-      // Write after every video so a crash loses at most one video's work.
+      console.log(`  ${entry.shortcode}: ${status} (escalation warranted [${escalation}], pass 2 unreadable)`);
+      // Persist pass 1's evidence even though this row is quarantined, not
+      // accepted — an auditor reads manifest.json, not console scrollback, and
+      // for a multi_title_claim escalation reason, additionalTitles here is the
+      // entire explanation for the quarantine. burnedInTitle is evidence only:
+      // every consumer of this manifest must gate on status === 'included'
+      // before treating a title as usable (see report — this mirrors how
+      // resolveOcrOutcome itself already sets burnedInTitle on non-included
+      // statuses like excluded_multi_title and needs_review_single_frame).
+      entry.status = status;
+      entry.burnedInTitle = first.pass.primaryTitle ?? undefined;
+      entry.additionalTitles = first.pass.additionalTitles;
+      entry.titleFrameRatio = coverageOf(first.pass);
+      entry.captionsPresent = first.pass.captionsPresent;
+      entry.partialReveal = first.pass.partialReveal;
+      entry.escalated = true; // an escalation was attempted — it just didn't complete
+      entry.escalationReason = escalation;
+      entry.ocrCostUsd = first.costUsd;
+      entry.ocrPasses = [first.pass];
+      review.push({ e: entry, p1: first.pass, p2: null, status });
       await saveManifest(dir, manifest);
+      return;
+    }
+
+    const outcome = resolveOcrOutcome(first.pass, second?.pass ?? null);
+    counts.set(outcome.status, (counts.get(outcome.status) ?? 0) + 1);
+
+    if (recheck) {
+      const same = titlesAgree(entry.burnedInTitle ?? null, outcome.burnedInTitle ?? null);
+      if (!same || outcome.status !== 'included') {
+        recheckDiffs.push(
+          `  ${entry.shortcode}\n    stored: ${JSON.stringify(entry.burnedInTitle)}\n    now:    ${JSON.stringify(outcome.burnedInTitle)} (${outcome.status})`,
+        );
+      }
+      console.log(`  ${entry.shortcode}: ${outcome.status}${same ? ' (match)' : ' (DIFFERS)'}`);
+      return;
+    }
+
+    entry.status = outcome.status;
+    entry.burnedInTitle = outcome.burnedInTitle;
+    entry.additionalTitles = outcome.additionalTitles;
+    entry.titleFrameRatio = outcome.titleFrameRatio;
+    entry.partialReveal = outcome.partialReveal;
+    entry.captionsPresent = outcome.captionsPresent;
+    entry.escalated = outcome.escalated;
+    entry.escalationReason = outcome.escalationReason;
+    entry.ocrCostUsd = first.costUsd + (second?.costUsd ?? 0);
+    entry.ocrPasses = second ? [first.pass, second.pass] : [first.pass];
+
+    if (outcome.status.startsWith('needs_review')) {
+      review.push({ e: entry, p1: first.pass, p2: second?.pass ?? null, status: outcome.status });
+    }
+
+    console.log(
+      `  ${entry.shortcode}: ${outcome.status}` +
+        (outcome.burnedInTitle ? ` — "${outcome.burnedInTitle}"` : '') +
+        (outcome.escalated ? ` [escalated: ${outcome.escalationReason}]` : ''),
+    );
+
+    // Write after every video so a crash loses at most one video's work.
+    await saveManifest(dir, manifest);
+  }
+
+  let breakerTripped = false;
+  let processedCount = 0;
+  for (const entry of pending) {
+    processedCount++;
+    try {
+      await processEntry(entry);
+      breaker.recordSuccess();
     } catch (e) {
       failed++;
+      if (e instanceof ProviderCallFailure) possiblyBilledFailures++;
       console.error(`  ${entry.shortcode}: FAILED — ${(e as Error).message}`);
+      if (breaker.recordFailure()) {
+        breakerTripped = true;
+        const remaining = pending.length - processedCount;
+        console.error(
+          `\n✖ ${CONSECUTIVE_FAILURE_LIMIT} consecutive failures — aborting rather than burning through ` +
+            `the remaining ${remaining} video(s) blind. Investigate (schema rejection? model change? ` +
+            `revoked key?) before re-running; already-processed rows above are saved.`,
+        );
+        break;
+      }
     }
   }
 
   console.log('\n─── Report ───');
   for (const [status, n] of [...counts.entries()].sort()) console.log(`  ${status.padEnd(28)} ${n}`);
-  const rate = pending.length > 0 ? (escalations / pending.length) * 100 : 0;
-  console.log(`  ${'escalation rate'.padEnd(28)} ${rate.toFixed(0)}% (${escalations}/${pending.length})`);
-  if (rate < 10 || rate > 35) {
-    console.log('  ⚠ Outside the 10–35% acceptance range — inspect before trusting this batch.');
+  console.log(`  ${'failed'.padEnd(28)} ${failed}` + (possiblyBilledFailures > 0
+    ? ` (${possiblyBilledFailures} of which may have been billed by the provider — exact amount unknown and NOT included in cost below)`
+    : ''));
+  console.log(`  ${'cost'.padEnd(28)} $${totalCost.toFixed(4)}` + (possiblyBilledFailures > 0 ? ' (excludes possibly-billed failures above)' : ''));
+
+  console.log('\n─── Escalation ───');
+  console.log(
+    `  sample size: ${judgedRows} row(s) judged this invocation (of ${pending.length} selected). This is a ` +
+      `PER-INVOCATION figure — the script processes one creator per run, so this is NOT the whole-batch rate; ` +
+      `do not compare it against the design's whole-batch acceptance range without aggregating across every ` +
+      `creator's run first.`,
+  );
+  const overallRate = judgedRows > 0 ? (escalationAttempts / judgedRows) * 100 : 0;
+  console.log(
+    `  overall rate: ${overallRate.toFixed(0)}% (${escalationAttempts}/${judgedRows}) — a cost-planning figure ` +
+      `only. It mixes deliberate confirm-before-discard triggers (no_title_claim, multi_title_claim) that fire ` +
+      `in proportion to how much title-less/multi-title material is in the source, not model confidence, with ` +
+      `genuine uncertainty. Do NOT read a high or low value here as "the prompt is under/over-confident".`,
+  );
+  console.log('  by trigger reason:');
+  for (const [reason, n] of [...escalationTriggerCounts.entries()].sort()) {
+    console.log(`    ${reason.padEnd(24)} ${n}`);
   }
-  console.log(`  ${'failed'.padEnd(28)} ${failed}`);
-  console.log(`  ${'cost'.padEnd(28)} $${totalCost.toFixed(4)}`);
+  const uncertainRate = judgedRows > 0 ? (uncertainEscalations / judgedRows) * 100 : 0;
+  console.log(
+    `  uncertain rate: ${uncertainRate.toFixed(1)}% (${uncertainEscalations}/${judgedRows}) — the ONLY figure ` +
+      `of the above that is diagnostic of model confidence (the model explicitly declined to commit).`,
+  );
+
+  if (breakerTripped) {
+    console.log(`\n⚠ Run aborted early after ${CONSECUTIVE_FAILURE_LIMIT} consecutive failures — figures above cover only the rows processed before the abort.`);
+    // Non-zero exit so this is visible to any calling script/CI and is not
+    // mistaken for a clean, complete run.
+    process.exitCode = 1;
+  }
 
   if (review.length > 0) {
     console.log('\n─── Needs review ───');

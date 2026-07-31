@@ -17,6 +17,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { loadEnvLocal, requireEnv } from './lib/load-env';
 import { loadManifest, saveManifest } from './lib/manifest';
+import { ConsecutiveFailureTracker, CONSECUTIVE_FAILURE_LIMIT } from './lib/circuit-breaker';
+import { ProviderCallFailure } from './lib/provider-call-failure';
 import { extractFrames } from '../lib/media/frames';
 import type { VisionProvider } from '../lib/providers/types';
 
@@ -81,13 +83,29 @@ async function main() {
   let totalCost = 0;
   let done = 0;
   let failed = 0;
+  let possiblyBilledFailures = 0;
+  const breaker = new ConsecutiveFailureTracker();
+  let breakerTripped = false;
+  let processedCount = 0;
 
   for (const entry of pending) {
+    processedCount++;
     try {
       const videoBytes = await fs.readFile(path.join(dir, entry.videoPath!));
       // No options — reproduces the orchestrator's call exactly.
       const jpegs = await extractFrames(videoBytes, DESCRIBE_FRAMES);
-      const res = await anthropicVision.describe({ kind: 'frames', jpegs });
+      let res: Awaited<ReturnType<typeof anthropicVision.describe>>;
+      try {
+        res = await anthropicVision.describe({ kind: 'frames', jpegs });
+      } catch (e) {
+        // A billed HTTP 200 with no tool_use block throws here — the request
+        // was charged but costUsd is never computed. Tag it so the caller
+        // can count "may have been billed" failures separately instead of
+        // under-reporting spend as if the call cost nothing.
+        throw new ProviderCallFailure(
+          `anthropicVision.describe failed (may have been billed; cost not recorded): ${(e as Error).message}`,
+        );
+      }
       const d = res.description;
 
       entry.descriptionFields = {
@@ -103,18 +121,41 @@ async function main() {
       delete entry.describeError;
       totalCost += res.costUsd;
       done++;
+      breaker.recordSuccess();
       console.log(`  ${entry.shortcode}: ${entry.visualDescription.slice(0, 90)}…`);
     } catch (e) {
       // A failed description must never discard a good title — record and move on.
       entry.describeError = (e as Error).message;
       failed++;
+      if (e instanceof ProviderCallFailure) possiblyBilledFailures++;
       console.error(`  ${entry.shortcode}: FAILED — ${(e as Error).message}`);
+      if (breaker.recordFailure()) {
+        breakerTripped = true;
+        const remaining = pending.length - processedCount;
+        console.error(
+          `\n✖ ${CONSECUTIVE_FAILURE_LIMIT} consecutive failures — aborting rather than burning through ` +
+            `the remaining ${remaining} video(s) blind. Investigate (schema rejection? model change? ` +
+            `revoked key?) before re-running; already-processed rows above are saved.`,
+        );
+        await saveManifest(dir, manifest);
+        break;
+      }
     }
     await saveManifest(dir, manifest);
   }
 
-  console.log(`\nDone. described=${done} failed=${failed} cost=$${totalCost.toFixed(4)}`);
-  if (failed > 0) console.log('Re-run this command to retry the failures.');
+  console.log(
+    `\nDone. described=${done} failed=${failed}` +
+      (possiblyBilledFailures > 0
+        ? ` (${possiblyBilledFailures} of which may have been billed by the provider — exact amount unknown and NOT included in cost below)`
+        : '') +
+      ` cost=$${totalCost.toFixed(4)}`,
+  );
+  if (failed > 0 && !breakerTripped) console.log('Re-run this command to retry the failures.');
+  if (breakerTripped) {
+    console.log(`⚠ Run aborted early after ${CONSECUTIVE_FAILURE_LIMIT} consecutive failures — figures above cover only the rows processed before the abort.`);
+    process.exitCode = 1;
+  }
 }
 
 main().catch((e) => {
