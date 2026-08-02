@@ -59,6 +59,7 @@ export function buildUserMessage(args: {
 
 ## Retrieved high-performing examples (mimic patterns, do not copy)
 ${examples}
+Do not carry a specific quantity, price, brand, or proper noun from a retrieved example into a new title unless the video description above actually supports it. You are free to invent your own number when the video genuinely shows a countable set.
 
 ## REQUIRED hook families (you MUST include at least one title for each)
 ${args.requiredFamilies.map((f) => `- ${f}`).join('\n')}
