@@ -192,7 +192,13 @@ function normalize(item: RawItem): NormalizedPost | null {
     shortcode,
     permalink: (pick(item, ['url', 'postUrl', 'link']) as string) ?? `https://www.instagram.com/reel/${shortcode}/`,
     caption: (pick(item, ['caption', 'text']) as string) ?? '',
-    views: toNumber(pick(item, ['videoViewCount', 'videoPlayCount', 'playsCount', 'viewCount'])),
+    // videoPlayCount FIRST, deliberately. `videoViewCount` is NOT an alias for it —
+    // Instagram returns both, and they are different metrics that disagree by 2.6x-130x
+    // on the same video (verified: DbKz0D-IZ9n = 179 vs 5,640). videoPlayCount is the
+    // figure Instagram surfaces as "views" and matches independent sources to within 1.
+    // Listing videoViewCount first silently mixed two metrics into one column.
+    // See docs/findings/2026-08-02-view-metric-inconsistency.md
+    views: toNumber(pick(item, ['videoPlayCount', 'playsCount', 'videoViewCount', 'viewCount'])),
     likes: toNumber(pick(item, ['likesCount', 'likeCount'])),
     comments: toNumber(pick(item, ['commentsCount', 'commentCount'])),
     postedAt: normalizeTimestamp(pick(item, ['timestamp', 'takenAt', 'takenAtTimestamp', 'postedAt'])),
