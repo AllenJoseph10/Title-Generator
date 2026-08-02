@@ -30,13 +30,17 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Dirent } from 'node:fs';
 import { loadEnvLocal, requireEnv } from './lib/load-env';
 import { loadManifest, saveManifest, type ManifestEntry } from './lib/manifest';
 
 const ACTOR_ID = 'apify~instagram-reel-scraper';
 const DEFAULT_MAX_DURATION_SEC = 60;
-const DEFAULT_OUTLIER_MULTIPLIER = 3;
+// Exported for reuse by scripts/refresh-metrics.ts (Stage 1 metrics repair —
+// see docs/findings/2026-08-02-view-metric-inconsistency.md), so the two
+// scripts can't silently diverge on what "outlier" and "top/bottom" mean.
+export const DEFAULT_OUTLIER_MULTIPLIER = 3;
 // 3 months: a wider window risks pulling in stale algorithmic/trend patterns
 // and computing the "expected views" baseline against posts that no longer
 // reflect current audience behavior.
@@ -44,7 +48,7 @@ const DEFAULT_NEWER_THAN_OUTLIERS = '3 months';
 // The subject's own corpus slice follows the brief's literal 12-month window.
 const DEFAULT_NEWER_THAN_TOP_BOTTOM = '12 months';
 const DEFAULT_LIMIT_OUTLIERS = 10;
-const DEFAULT_LIMIT_TOP_BOTTOM = 50;
+export const DEFAULT_LIMIT_TOP_BOTTOM = 50;
 const STAGE2_STATUSES = new Set(['included', 'excluded_no_title', 'excluded_multi_title']);
 
 type Mode = 'outliers' | 'top-bottom';
@@ -130,7 +134,10 @@ function median(nums: number[]): number {
 // "Expected views" baseline for this creator: median views, computed after
 // excluding their own existing extreme outliers (>5x or <0.2x the raw median)
 // so a prior freak hit doesn't inflate what counts as "normal" for them.
-function expectedViewsBaseline(allViews: number[]): number {
+// Exported for reuse by scripts/refresh-metrics.ts — must stay byte-for-byte
+// the same algorithm the original scrape used, or refreshed baselines stop
+// being comparable to the ones stored in existing manifests.
+export function expectedViewsBaseline(allViews: number[]): number {
   const raw = median(allViews);
   if (raw === 0) return 0;
   const cleaned = allViews.filter((v) => v <= raw * 5 && v >= raw * 0.2);
@@ -464,7 +471,16 @@ async function main() {
   console.log(`Real dollar cost of this Apify run is visible in Apify Console → Usage.`);
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+// Entry-point guard: scripts/refresh-metrics.ts imports expectedViewsBaseline
+// and the mode constants from this module. Without this guard, that import
+// alone would run main() (and immediately exit(1) parsing refresh-metrics'
+// own CLI args as if they were this script's). Direct invocation
+// (`tsx scripts/scrape-instagram.ts ...`) is unaffected — process.argv[1] is
+// this file in that case, so main() still runs exactly as before.
+const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMainModule) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
