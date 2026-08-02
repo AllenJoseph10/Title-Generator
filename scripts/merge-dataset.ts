@@ -48,8 +48,14 @@ async function main() {
         e.views,
         e.likes,
         e.comments,
-        '', // shares — private analytics, unscrapable
-        '', // saves  — private analytics, unscrapable
+        // shares — from SocialCrawl; Apify exposes no share field at all.
+        // Empty means we have no reading, NOT zero: three rows legitimately
+        // returned null on videos with 66-14,847 views, i.e. genuinely unshared.
+        e.socialcrawl?.shares ?? '',
+        // saves — verified unobtainable from every source tested (SocialCrawl
+        // returns null on every reel, including its premium endpoint), and the
+        // feature is now hidden on Instagram itself.
+        '',
         e.durationSec,
         NICHE,
         '', // hook_family — assigned by the importer from lib/hooks/taxonomy.ts
