@@ -13,7 +13,8 @@
     "extract:titles": "tsx scripts/extract-burned-in-titles.ts",
     "describe:videos": "tsx --conditions=react-server scripts/describe-videos.ts",
     "merge:dataset": "tsx scripts/merge-dataset.ts",
-    "refresh:metrics": "tsx scripts/refresh-metrics.ts"
+    "refresh:metrics": "tsx scripts/refresh-metrics.ts",
+    "collect:shares": "tsx scripts/collect-shares.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",

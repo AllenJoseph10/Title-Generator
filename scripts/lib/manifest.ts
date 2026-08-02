@@ -45,6 +45,24 @@ export type ManifestEntry = {
   };
   describeCostUsd?: number;
   describeError?: string;
+
+  // Stage 3 — metrics
+  // Set by scripts/refresh-metrics.ts when views/likes/comments were re-pulled
+  // from Apify (see docs/findings/2026-08-02-view-metric-inconsistency.md).
+  metricsRefreshedAt?: string;
+  // Independent metrics from SocialCrawl, kept in their own object so the
+  // Apify-sourced top-level views/likes/comments are never overwritten — the
+  // cross-source audit is only possible while both readings coexist.
+  // `shares` is the reason this exists: Apify exposes no share field at all.
+  socialcrawl?: {
+    views: number | null;
+    likes: number | null;
+    comments: number | null;
+    shares: number | null;
+    engagementRate: number | null;
+    estimatedReach: number | null;
+    fetchedAt: string;
+  };
 };
 
 export function manifestPath(dir: string): string {
