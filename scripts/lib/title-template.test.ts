@@ -1,0 +1,128 @@
+import { describe, expect, it } from 'vitest';
+import { templatiseTitle } from './title-template';
+
+describe('templatiseTitle', () => {
+  it('replaces a bare cardinal quantifying a content noun', () => {
+    expect(templatiseTitle('6 Old Money Outfits Every Man Needs')).toBe(
+      '{N} Old Money Outfits Every Man Needs',
+    );
+  });
+
+  it('leaves a duration in dialogue unchanged', () => {
+    const t = 'Her: "I\'ll be there in 5 minutes"\n\nMe:';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a measurement unchanged', () => {
+    const t = 'POV: the UV index is 9...';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a rank unchanged, even though the noun after it is on the whitelist', () => {
+    const t = 'Number 1 tourist mistake in New York...';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a price unchanged', () => {
+    const t = 'Giving a famous chef a £1,500 style transformation';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a year unchanged', () => {
+    const t = 'How to Elevate your Content in 2026...';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves an age decade unchanged', () => {
+    const t = "Nobody warns you about this in your 30's";
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a product spec unchanged', () => {
+    const t = "If she isn't forcing SPF 50+ on you she's not that into you...";
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a number inside a proper noun unchanged', () => {
+    const t = 'Clever Ways Formula 1 Actually Makes Money';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a percentage unchanged', () => {
+    const t = 'Hugh Grant scene from Love Actually\n96% accuracy...';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a duration ("your skin deserves 5 minutes") unchanged', () => {
+    const t = 'your skin deserves 5 minutes';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a duration ("after 7 years") unchanged', () => {
+    const t = 'Updating my passport photo after 7 years...';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a duration ("waited 2 hours") unchanged', () => {
+    const t = 'When I waited 2 hours for her to get ready...';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a frequency unchanged', () => {
+    const t = 'Hot take: men who only spray 3 times probably also order matcha.';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  // --- Additional edge cases ---
+
+  it('does NOT handle number-word forms (documented limitation)', () => {
+    const t = 'Six Old Money Outfits Every Man Needs';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('templates only the qualifying number when a title has several', () => {
+    const t = '7 Rules Every Man Breaks by 30';
+    expect(templatiseTitle(t)).toBe('{N} Rules Every Man Breaks by 30');
+  });
+
+  it('leaves a title with no numbers at all unchanged', () => {
+    const t = 'Old Money Outfits Every Man Needs';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('templates a singular content noun quantified by 1', () => {
+    expect(templatiseTitle('1 Mistake Every Guy Makes on a First Date')).toBe(
+      '{N} Mistake Every Guy Makes on a First Date',
+    );
+  });
+
+  it('templates a noun matched close but not adjacent, at the edge of the window', () => {
+    expect(templatiseTitle('3 things you should absolutely never do')).toBe(
+      '{N} things you should absolutely never do',
+    );
+  });
+
+  it('does not template a rank written as "#1"', () => {
+    const t = '#1 mistake every man makes';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('does not template a second unrelated number after a stop character', () => {
+    // "5" quantifies nothing in this clause; the noun after the colon
+    // belongs to a different clause and is out of window/stopped at ":".
+    const t = 'Day 5: outfits I never wear again';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('templates every qualifying number when a title has more than one', () => {
+    expect(templatiseTitle('5 mistakes, 3 tips')).toBe('{N} mistakes, {N} tips');
+  });
+
+  it('is a pure function (does not mutate its input, safe to call repeatedly)', () => {
+    const t = '6 Old Money Outfits Every Man Needs';
+    const first = templatiseTitle(t);
+    const second = templatiseTitle(t);
+    expect(first).toBe(second);
+    expect(t).toBe('6 Old Money Outfits Every Man Needs');
+  });
+});

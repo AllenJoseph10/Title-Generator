@@ -8,11 +8,13 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { loadManifest } from './lib/manifest';
 import { csvRow } from './lib/csv';
+import { templatiseTitle } from './lib/title-template';
 
 const HEADER = [
   'video_id', 'date_posted', 'platform', 'creator_handle', 'video_url',
   'burned_in_title', 'caption', 'views', 'likes', 'comments', 'shares',
   'saves', 'duration_sec', 'niche', 'hook_family', 'notes', 'visual_description',
+  'title_template',
 ];
 
 const NICHE = 'luxury-menswear';
@@ -53,6 +55,7 @@ async function main() {
         '', // hook_family — assigned by the importer from lib/hooks/taxonomy.ts
         e.partialReveal ? 'partial_reveal' : '',
         e.visualDescription,
+        templatiseTitle(e.burnedInTitle ?? ''),
       ]));
     }
     console.log(`  ${handle.padEnd(20)} ${included.length} rows`);

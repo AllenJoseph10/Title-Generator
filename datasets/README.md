@@ -28,9 +28,9 @@ Open in Excel, Numbers, or Google Sheets. Each row = one published short-form vi
 | `caption` | The post caption (under the video). Useful but not critical. |
 | `niche` | Default `luxury-menswear`. Change if a video is more lifestyle/finance. |
 | `hook_family` | **Leave blank.** The importer auto-classifies into one of: `relatable_pov`, `setup_trivial_reveal`, `listicle_reveal`, `reaction_humblebrag`, `transformation_tease` (see `lib/hooks/taxonomy.ts`). |
-| `notes` | Anything weird — collab post, sponsored, format experiment, etc. |
+| `notes` | Anything weird — collab post, sponsored, format experiment, etc. `partial_reveal` is set automatically when the burned-in title animated in rather than appearing complete. |
 | `visual_description` | **Auto-generated.** A short factual description of what the video shows, produced by `npm run describe:videos`. Do not fill in by hand — it must come from the same vision prompt the app uses at query time, or retrieval degrades. |
-| `notes` | Anything unusual. `partial_reveal` is set automatically when the burned-in title animated in rather than appearing complete. |
+| `title_template` | **Auto-generated.** Produced by `scripts/lib/title-template.ts` from `burned_in_title`. Bare numerals that quantify delivered content (e.g. "outfits", "ways", "tips") are replaced with `{N}`; everything else — prices, years, ranks, durations, percentages — is left alone. Do not hand-edit. Exists so the corpus can be matched on hook pattern (e.g. `listicle_reveal`'s "{N} Old Money Outfits Every Man Needs") without a retrieved example's specific quantity leaking into a new title. `burned_in_title` remains the verbatim source of truth; this column is a derived view, never the other way around. |
 
 ### Targets
 
