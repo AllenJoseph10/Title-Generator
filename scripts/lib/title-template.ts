@@ -52,15 +52,22 @@ const RANK_WORDS = new Set(['number', 'no', 'rank']);
 // wandering into the next clause.
 const FORWARD_WORD_WINDOW = 4;
 
-// A comma-grouped integer like "1,500", OR a decimal like "4.5" / "19.99",
-// OR a bare integer — captured as ONE token each, in that priority order.
-// Splitting either of these apart is exactly the failure mode this rule
-// exists to avoid: a price like "£1,500" must not fragment into two
-// independent number matches ("1" and "500") where "500" could land next
-// to an unrelated content noun, and a decimal like "$19.99" or "4.5" must
-// not fragment into "19"/"99" or "4"/"5" where either half could be
-// mistaken for a whole quantity on its own.
-const NUMBER_RE = /\b\d{1,3}(?:,\d{3})+\b|\b\d+\.\d+\b|\b\d+\b/g;
+// A comma-grouped integer like "1,500", OR a bare integer — captured as ONE
+// token each, in that priority order. Splitting a genuine thousands-grouped
+// price apart is exactly the failure mode this rule exists to avoid: "£1,500"
+// must not fragment into two independent number matches ("1" and "500")
+// where "500" could land next to an unrelated content noun.
+//
+// Decimals, fractions, ratios, and version-like sequences ("4.5", "3/5",
+// "6.1.2") are deliberately NOT consumed as single tokens here — instead
+// each digit run inside them still matches individually, and the
+// punctuation-adjacency check below (isAdjacentToCompoundPunctuation)
+// disqualifies every one of those runs. That is simpler and more general
+// than trying to write a regex that swallows every compound-numeric shape
+// up front, and it composes for free with the comma-grouped alternative:
+// whichever alternative NUMBER_RE happens to match, the adjacency check
+// still inspects the true characters immediately outside that match.
+const NUMBER_RE = /\b\d{1,3}(?:,\d{3})+\b|\b\d+\b/g;
 
 function stripPunct(word: string): string {
   return word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
@@ -72,6 +79,45 @@ function isYearLike(digits: string): boolean {
   if (digits.length !== 4) return false;
   const n = Number(digits);
   return n >= 1900 && n <= 2099;
+}
+
+// A digit run that touches a "." or "/" with no space is a component of a
+// larger compound numeric expression (a decimal "4.5", a leading-dot
+// decimal ".5", a fraction/ratio "3/5", a version-like sequence "6.1.2")
+// — never itself a count of discrete countable items. You cannot have 4.5
+// outfits. Fix round 1 handled the "\d+\.\d+" shape as a single consumed
+// token; that missed ".5" (no leading digit) and "3/5" or "4.5/5" (slash,
+// or more than one separator). Checking raw adjacency here, per digit run,
+// covers all of those uniformly and any further nesting ("6.1.2") for free
+// — every digit run in a compound chain is adjacent to a "." or "/" on at
+// least one side, so every one of them gets disqualified.
+//
+// The one direction this must NOT catch: a number followed by a genuine
+// sentence-ending period, e.g. "You need 6. Outfits matter." — "6." here
+// is followed by a space, not a digit, so it is a full stop, not a
+// decimal point. That's why the forward check additionally requires a
+// digit immediately after the ".", while every other direction disqualifies
+// unconditionally on mere adjacency (a digit is never legitimately glued
+// to "/" or "," outside of a compound expression or a proper thousands
+// group, and the thousands-group case never reaches this check because
+// NUMBER_RE already consumed it as one token above).
+function isAdjacentToCompoundPunctuation(title: string, start: number, end: number): boolean {
+  const charBefore = start > 0 ? title[start - 1] : '';
+  const charsAfter = title.slice(end, end + 2);
+
+  const precededByDotOrSlash = charBefore === '.' || charBefore === '/';
+  // A digit run glued directly to a comma that ISN'T part of a proper
+  // 3-digit thousands group (that shape was already consumed as one token
+  // by NUMBER_RE) is most often a European-style comma-decimal ("4,5") or
+  // similar — ambiguous in a listicle title, and this corpus is
+  // English-language, so we resolve the ambiguity conservatively: treat it
+  // as a compound expression and leave it unchanged rather than risk
+  // mangling one half of it.
+  const precededByComma = charBefore === ',';
+  const followedBySlashOrComma = charsAfter[0] === '/' || charsAfter[0] === ',';
+  const followedByDecimalPoint = charsAfter[0] === '.' && /\d/.test(charsAfter[1] ?? '');
+
+  return precededByDotOrSlash || precededByComma || followedBySlashOrComma || followedByDecimalPoint;
 }
 
 // Is there a whitelisted content noun within FORWARD_WORD_WINDOW words
@@ -101,13 +147,9 @@ export function templatiseTitle(title: string): string {
     const start = match.index;
     const end = start + match[0].length;
 
-    // Decimal: "4.5", "19.99" — you cannot have 4.5 outfits. A number with
-    // a fractional component is never a count of discrete countable items,
-    // so it is disqualified outright regardless of what noun follows. Do
-    // NOT remove this to "allow" decimals — NUMBER_RE matches the whole
-    // "4.5" as one token specifically so neither half (e.g. the "5" in
-    // "4.5 outfits") can ever be mistaken for a standalone quantity.
-    const isDecimal = match[0].includes('.');
+    // Compound numeric expression: "4.5", ".5", "3/5", "4.5/5", "6.1.2" —
+    // see isAdjacentToCompoundPunctuation() above.
+    const isCompound = isAdjacentToCompoundPunctuation(title, start, end);
 
     // Price: "£1,500", "$50", "€9" — a number glued to a currency symbol
     // is never a content quantity.
@@ -133,7 +175,7 @@ export function templatiseTitle(title: string): string {
       precedingWordRaw.startsWith('#');
 
     const disqualified =
-      isDecimal ||
+      isCompound ||
       precededByCurrency ||
       followedByPercentOrPlus ||
       followedByPossessive ||

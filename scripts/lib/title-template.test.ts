@@ -153,4 +153,55 @@ describe('templatiseTitle', () => {
     const t = 'My rating is 4.5 out of 5 stars';
     expect(templatiseTitle(t)).toBe(t);
   });
+
+  // --- Compound numeric expressions (fix round 2) ---
+  // Round 1 consumed "\d+\.\d+" as a single token, which only caught
+  // decimals with a leading digit. It missed ".5" (no leading digit) and
+  // anything using "/" instead of "." (fractions/ratios) or more than one
+  // separator (version-like sequences). The general principle: a digit run
+  // adjacent to "." or "/" with no space is a component of a compound
+  // numeric expression, never itself a count of discrete items — that
+  // covers all of these uniformly, at any nesting depth.
+
+  it('leaves a rating-out-of-5 with a slash unchanged', () => {
+    const t = 'Top 4.5/5 outfits';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a leading-dot decimal (no leading digit) unchanged', () => {
+    const t = '.5 outfits';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a version-like dotted sequence unchanged', () => {
+    const t = '6.1.2 ways';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a bare fraction unchanged', () => {
+    const t = '3/5 outfits';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('does not treat a sentence-ending period as a compound-punctuation decimal point', () => {
+    // "6." here is a full stop (followed by a space), not a decimal point,
+    // so the compound-punctuation guard must not fire on it. (It stays
+    // unchanged for an unrelated reason too — the noun is in the next
+    // clause, past the period — but this asserts the guard itself is not
+    // over-eager here.)
+    const t = 'You need 6. Outfits matter.';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('still templates a genuine comma-grouped quantity', () => {
+    expect(templatiseTitle('1,500 outfits')).toBe('{N} outfits');
+  });
+
+  it('treats a European-style comma-decimal as an unresolved compound and leaves it unchanged', () => {
+    // "4,5" is ambiguous (European decimal vs. a genuine "4, 5" list with a
+    // dropped space); this corpus is English-language, so we resolve the
+    // ambiguity conservatively rather than risk mangling one half of it.
+    const t = '4,5 outfits';
+    expect(templatiseTitle(t)).toBe(t);
+  });
 });
