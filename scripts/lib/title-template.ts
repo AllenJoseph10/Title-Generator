@@ -2,8 +2,8 @@
 // burned-in title: a bare cardinal number that quantifies a countable
 // "content noun" (outfits, ways, tips, ...) is replaced with the
 // placeholder `{N}`. Every other number in the corpus — durations, prices,
-// years, ranks, percentages, product specs, ages, frequencies, numbers
-// embedded in a proper noun — is left untouched. See
+// decimals/ratings, years, ranks, percentages, product specs, ages,
+// frequencies, numbers embedded in a proper noun — is left untouched. See
 // title-template.test.ts for the corpus of examples this was designed
 // against.
 //
@@ -52,11 +52,15 @@ const RANK_WORDS = new Set(['number', 'no', 'rank']);
 // wandering into the next clause.
 const FORWARD_WORD_WINDOW = 4;
 
-// A bare integer, OR a comma-grouped integer like "1,500", captured as one
-// token — otherwise a price like "£1,500" would fragment into two
-// independent number matches ("1" and "500") and "500" could accidentally
-// land next to an unrelated content noun.
-const NUMBER_RE = /\b\d{1,3}(?:,\d{3})+\b|\b\d+\b/g;
+// A comma-grouped integer like "1,500", OR a decimal like "4.5" / "19.99",
+// OR a bare integer — captured as ONE token each, in that priority order.
+// Splitting either of these apart is exactly the failure mode this rule
+// exists to avoid: a price like "£1,500" must not fragment into two
+// independent number matches ("1" and "500") where "500" could land next
+// to an unrelated content noun, and a decimal like "$19.99" or "4.5" must
+// not fragment into "19"/"99" or "4"/"5" where either half could be
+// mistaken for a whole quantity on its own.
+const NUMBER_RE = /\b\d{1,3}(?:,\d{3})+\b|\b\d+\.\d+\b|\b\d+\b/g;
 
 function stripPunct(word: string): string {
   return word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
@@ -97,6 +101,14 @@ export function templatiseTitle(title: string): string {
     const start = match.index;
     const end = start + match[0].length;
 
+    // Decimal: "4.5", "19.99" — you cannot have 4.5 outfits. A number with
+    // a fractional component is never a count of discrete countable items,
+    // so it is disqualified outright regardless of what noun follows. Do
+    // NOT remove this to "allow" decimals — NUMBER_RE matches the whole
+    // "4.5" as one token specifically so neither half (e.g. the "5" in
+    // "4.5 outfits") can ever be mistaken for a standalone quantity.
+    const isDecimal = match[0].includes('.');
+
     // Price: "£1,500", "$50", "€9" — a number glued to a currency symbol
     // is never a content quantity.
     const charBefore = start > 0 ? title[start - 1] : '';
@@ -121,6 +133,7 @@ export function templatiseTitle(title: string): string {
       precedingWordRaw.startsWith('#');
 
     const disqualified =
+      isDecimal ||
       precededByCurrency ||
       followedByPercentOrPlus ||
       followedByPossessive ||

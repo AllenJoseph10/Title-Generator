@@ -125,4 +125,32 @@ describe('templatiseTitle', () => {
     expect(first).toBe(second);
     expect(t).toBe('6 Old Money Outfits Every Man Needs');
   });
+
+  // --- Decimal regression (fix round 1) ---
+  // A decimal like "4.5" or "19.99" must never fragment into two number
+  // matches ("4"/"5" or "19"/"99") where either half could be mistaken for
+  // a standalone quantity next to a content noun. You cannot have 4.5
+  // outfits, so decimals are disqualified outright, not just protected by
+  // the currency/percent/rank guards (which only inspect the character
+  // immediately touching the match and previously missed this).
+
+  it('leaves a rating decimal immediately followed by a content noun unchanged', () => {
+    const t = 'Rated 4.5 outfits out of 5';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a price-with-cents immediately followed by a content noun unchanged', () => {
+    const t = '$19.99 outfits for under $20';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a bare decimal with a content noun directly after it unchanged', () => {
+    const t = '4.5 outfits';
+    expect(templatiseTitle(t)).toBe(t);
+  });
+
+  it('leaves a decimal with no content noun anywhere unchanged', () => {
+    const t = 'My rating is 4.5 out of 5 stars';
+    expect(templatiseTitle(t)).toBe(t);
+  });
 });
