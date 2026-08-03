@@ -19,7 +19,11 @@ export type CorpusTitle = {
   id: string;
   title: string;
   hookFamily: HookFamily;
-  saveRateEstimate: number | null;
+  // Percentile rank (0-1) of the video's share rate across the corpus.
+  // NULL means unmeasured, never zero. Formerly `saveRateEstimate` — saves
+  // proved unobtainable from every source, see
+  // docs/findings/2026-08-02-performance-metric-decision.md.
+  performanceScore: number | null;
 };
 
 export type GeneratedTitle = {

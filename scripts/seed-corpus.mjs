@@ -73,7 +73,11 @@ async function insertCorpus(nicheId, rows, embeddings) {
     niche_id: nicheId,
     title: row.title,
     hook_family: row.hook_family,
-    save_rate_estimate: row.save_rate_estimate,
+    // Column renamed in migration 0003. These seed values are hand-invented
+    // guesses and carry no description_embedding, so the retrieval RPC
+    // excludes them — they cannot reach the app. Real data comes from
+    // scripts/import-dataset.ts.
+    performance_score: row.save_rate_estimate,
     source_platform: row.source_platform,
     embedding: embeddings[i],
   }));

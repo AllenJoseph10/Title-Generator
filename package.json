@@ -13,6 +13,7 @@
     "extract:titles": "tsx scripts/extract-burned-in-titles.ts",
     "describe:videos": "tsx --conditions=react-server scripts/describe-videos.ts",
     "merge:dataset": "tsx scripts/merge-dataset.ts",
+    "import:dataset": "tsx --conditions=react-server scripts/import-dataset.ts",
     "refresh:metrics": "tsx scripts/refresh-metrics.ts",
     "collect:shares": "tsx scripts/collect-shares.ts"
   },
