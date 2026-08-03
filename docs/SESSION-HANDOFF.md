@@ -117,7 +117,7 @@ The brief's claim that `saves` is "the most valuable column" is **obsolete** —
 ## REMAINING WORK (deliverables 2–5)
 
 - ~~**Schema + retrieval**~~ — **DONE 2026-08-03**, see "Retrieval fixed and the real corpus is live" below.
-- **`scripts/import-dataset.mjs`** (deliverable 2) — note `lib/hooks/classify.ts` returns ≥3 *candidate* families from a vision description; it is NOT a single-label title classifier. That gap must be filled.
+- ~~**`scripts/import-dataset.mjs`** (deliverable 2)~~ — **DONE 2026-08-03** as `scripts/import-dataset.ts`. The `lib/hooks/classify.ts` gap it flagged (that function returns ≥3 *candidate* families from a vision description and is not a single-label title classifier) was filled with a batched Claude pass inside the importer — but see the 51% low-confidence finding below.
 - **`scripts/eval.mjs` + `EVAL.md`** (deliverable 4) — the experiment to run is whether `performance_score` or `view_outlier_score` better predicts held-out performance. They agree only moderately (0.410), so they will disagree on a meaningful fraction of rows.
 - **Niche selector** (deliverable 5, stretch) — `page.tsx` hardcodes `luxury-menswear` / `william_j_wade`.
 
@@ -210,7 +210,7 @@ key cannot run DDL. **Any future migration needs the same manual step.**
 |---|---|---|
 | neighbour similarity | 0.57 – 0.91 | 0.34 – 0.51 |
 | self-match ranks first | yes, 1.0000 | — |
-| overlap with the other ranking | \multicolumn | 0/4, 1/4, 1/4 |
+| overlap between the two rankings | 0/4, 1/4, 1/4 across three probes | |
 
 The overlap is the important figure: the two paths retrieve almost entirely
 different rows, so this was a real defect, not tuning.
