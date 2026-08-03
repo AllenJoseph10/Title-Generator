@@ -136,3 +136,34 @@ The brief's claim that `saves` is "the most valuable column" is **obsolete** —
 - `datasets/raw/_quarantine-review.md` — quarantined videos with both passes' evidence
 
 **Security:** the builder brief `.docx` files in the repo root contain live client credentials. `*.docx` is gitignored — do not remove it. `SOCIALCRAWL_API_KEY` was added to `.env.local` (also gitignored).
+
+---
+
+## CORRECTION 2026-08-03 — the audit verified source-agreement, NOT correctness
+
+A UI spot-check on `rsimacourbe/Da3fJwKA6HZ` found our data disagrees with Instagram:
+
+| | Instagram UI | our data |
+|---|---|---|
+| likes | 10.8K | 8,578 (~21% low) |
+| comments | 147 | 76 (~48% low) |
+| reposts | 70 | not collected |
+| shares/sends | not shown | 2,037 |
+
+**The earlier "likes 111/111, comments 111/111" audit result does NOT mean the metrics are correct.** It means Apify and SocialCrawl agree with each other — they appear to read the same upstream field, so they can agree perfectly while both differ from the app. This is the same failure mode that hid the view-metric bug: internal consistency mistaken for correctness.
+
+Likely explanations:
+- **comments** — the API counts top-level comments only; the UI includes replies. A definitional difference, but the column does not mean what a reader assumes.
+- **likes** — ~21% low, unexplained.
+- **`shares` (2,037) is NOT reposts (70).** It is almost certainly DM sends, which the UI does not display. **Reposts ARE public and visible** — an earlier conclusion that reposts were unobtainable anywhere was wrong and was based on documentation rather than the app.
+
+### Impact
+
+- **None on titles or visual descriptions** — both derive from video frames, never from metrics.
+- **None on `likes`/`comments` consumers — there are none.** Verified: `corpus_titles` has no likes/comments column; `computeTitlePrior` reads only `save_rate_estimate`; `match_corpus_titles` does not return them; neither `performance_score` (`shares/views`) nor `view_outlier_score` (`views/median`) uses them. They are descriptive columns only.
+- **OPEN AND IMPORTANT: are `views` also under-reported?** Views are the denominator of the primary metric and the numerator of the secondary. Views were cross-checked more convincingly (Apify `videoPlayCount` vs SocialCrawl agreed to 0.002% across several reels), but never against the Instagram UI. **Spot-check views on 2-3 reels before building the importer.**
+
+### Actions
+1. Spot-check views against the app. This decides whether `performance_score` is sound.
+2. Relabel the `comments` column as top-level-only, or drop it.
+3. Re-investigate reposts — they are public and were wrongly written off.
