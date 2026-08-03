@@ -206,6 +206,15 @@ async function countRows(nicheId: string): Promise<number> {
   return parseInt((res.headers.get('content-range') ?? '/0').split('/')[1] ?? '0', 10);
 }
 
+async function tallyByNiche(): Promise<Record<string, number>> {
+  const rows = (await rest('corpus_titles?select=niche_id').then((r) => r.json())) as Array<{
+    niche_id: string;
+  }>;
+  const tally: Record<string, number> = {};
+  for (const r of rows) tally[r.niche_id] = (tally[r.niche_id] ?? 0) + 1;
+  return tally;
+}
+
 async function assertMigrationApplied(): Promise<void> {
   try {
     await rest('corpus_titles?select=performance_score,description_embedding,creator_handle&limit=1');
@@ -304,22 +313,36 @@ async function main() {
 
   const unscored = payload.filter((p) => p.performance_score === null).length;
 
-  const existing = await countRows(nicheId);
-  console.log(`\nniche "${nicheId}": ${existing} rows currently in Supabase`);
+  const before = await tallyByNiche();
+  const existingTotal = Object.values(before).reduce((a, b) => a + b, 0);
+  console.log('\ncurrently in Supabase:');
+  for (const [n, c] of Object.entries(before).sort((a, b) => b[1] - a[1])) {
+    console.log(`  ${n.padEnd(20)}${c}`);
+  }
   console.log(`about to insert ${payload.length} rows (${unscored} with performance_score NULL)`);
 
   if (!apply) {
-    console.log('\ndry run: nothing written. Re-run with --apply.');
+    console.log(`\ndry run: nothing written. Re-run with --apply.`);
+    console.log(`--apply would DELETE all ${existingTotal} existing rows, then insert ${payload.length}.`);
     return;
   }
 
   // --- write --------------------------------------------------------------
-  // Scoped to this niche so the other seeded niches are untouched, and so a
-  // re-run replaces its own previous import rather than duplicating it.
-  // Percentiles are corpus-relative, which makes replace-in-full the only
-  // correct update: appending would mix scores computed over different corpora.
-  console.log(`\ndeleting ${existing} existing rows for ${nicheId}…`);
-  await rest(`corpus_titles?niche_id=eq.${nicheId}`, { method: 'DELETE' });
+  // Full replace of corpus_titles, every niche.
+  //
+  // Two reasons, and both matter:
+  //  1. Everything currently in the table is hand-invented seed data with
+  //     guessed metrics (seed/corpus.mjs). The generator must only ever see
+  //     real scraped titles, so invented rows are deleted rather than left
+  //     sitting behind a WHERE clause that today happens to exclude them.
+  //  2. performance_score is a percentile, which is corpus-relative. Appending
+  //     would mix scores computed over different corpora into one ranking.
+  //     Replace-in-full is the only correct update.
+  //
+  // Recoverable: re-running this script rebuilds the table from the CSV.
+  console.log(`\ndeleting all ${existingTotal} existing rows…`);
+  // PostgREST refuses an unfiltered DELETE; this predicate matches every row.
+  await rest('corpus_titles?id=not.is.null', { method: 'DELETE' });
 
   for (let i = 0; i < payload.length; i += INSERT_BATCH) {
     await rest('corpus_titles', {
@@ -336,7 +359,15 @@ async function main() {
     { headers: { prefer: 'count=exact' } },
   ).then((r) => parseInt((r.headers.get('content-range') ?? '/0').split('/')[1] ?? '0', 10));
 
+  const after = await tallyByNiche();
+  const afterTotal = Object.values(after).reduce((a, b) => a + b, 0);
+
   console.log(`\ndone. ${final} rows in ${nicheId}, ${withDesc} with a description_embedding.`);
+  console.log('corpus_titles now holds:');
+  for (const [n, c] of Object.entries(after)) console.log(`  ${n.padEnd(20)}${c}`);
+  if (afterTotal !== final) {
+    console.log(`⚠ ${afterTotal - final} rows outside "${nicheId}" survived the purge — invented seed data may remain.`);
+  }
   if (final !== payload.length) {
     console.log(`⚠ expected ${payload.length} rows, found ${final}.`);
   }

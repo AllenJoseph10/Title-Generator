@@ -1,9 +1,20 @@
 // Seed niches + corpus titles with OpenAI embeddings. Idempotent.
 // Run with: node scripts/seed-corpus.mjs
+//
+// SUPERSEDED for corpus_titles. The 250 titles in seed/corpus.mjs are
+// hand-invented with guessed save rates, and were deliberately purged from the
+// database so the generator only ever sees real scraped data. Real titles come
+// from `npm run import:dataset`.
+//
+// The niche rows below are still real configuration, so seeding those is
+// always allowed. Inserting the invented corpus titles now requires an
+// explicit --force-fake-seed, so this script cannot silently undo the purge.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { NICHES, LUXURY_MENSWEAR, LIFESTYLE, FINANCE } from '../seed/corpus.mjs';
+
+const FORCE_FAKE = process.argv.includes('--force-fake-seed');
 
 const envText = fs.readFileSync(path.join(process.cwd(), '.env.local'), 'utf8');
 const env = {};
@@ -91,6 +102,16 @@ async function insertCorpus(nicheId, rows, embeddings) {
 }
 
 await upsertNiches();
+
+if (!FORCE_FAKE) {
+  console.log(
+    '\nniches seeded. Skipping the 250 invented corpus titles — they were purged\n' +
+      'from the database on purpose so the generator only sees real data.\n' +
+      'Real titles: npm run import:dataset -- --apply\n' +
+      'To insert the invented ones anyway: node scripts/seed-corpus.mjs --force-fake-seed',
+  );
+  process.exit(0);
+}
 
 let totalNew = 0;
 for (const nicheId of Object.keys(BY_NICHE)) {
