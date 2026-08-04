@@ -245,7 +245,7 @@ export function meanSd(xs: number[]): { mean: number; sd: number } {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx vitest run scripts/lib/eval-metrics.test.ts`
-Expected: PASS, 16 tests
+Expected: PASS, 15 tests (rankdata 3, spearman 6, slatePrecisionAtK 4, meanSd 2)
 
 - [ ] **Step 5: Commit**
 
@@ -489,7 +489,7 @@ export function assignFolds<T>(
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx vitest run scripts/lib/eval-split.test.ts`
-Expected: PASS, 12 tests
+Expected: PASS, 12 tests (mulberry32 3, normalizeTitleKey 2, groupByTitle 2, assignFolds 5)
 
 - [ ] **Step 5: Commit**
 
@@ -644,7 +644,7 @@ and replace the blended line:
 - [ ] **Step 6: Run the full suite to verify nothing regressed**
 
 Run: `npm test`
-Expected: PASS — the 5 new tests plus all 111 existing ones (116 total)
+Expected: PASS — 143 tests (111 pre-existing + 15 from Task 1 + 12 from Task 2 + 5 here)
 
 - [ ] **Step 7: Verify the app still typechecks**
 
