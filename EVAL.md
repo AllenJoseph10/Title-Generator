@@ -213,13 +213,14 @@ is a measurement, not a gate.
 Run 2026-08-04, seed 20260804, 175-row corpus:
 
 ```
+
 eval — 172 of 175 rows scoreable, 5-fold x 5 repeats, seed 20260804
 ground truth: performance_score        funnel: top-30 -> MMR(8, lambda=0.6)
-family blend: 0.3
+family blend: 0
 
-Spearman (headline)      0.232 (fold-assignment spread 0.023 across 5 seeds)
+Spearman (headline)      0.259 (fold-assignment spread 0.022 across 5 seeds)
   sampling SE (n=172)   ~0.076  (analytic, 1/sqrt(n-1) — the dominant uncertainty, not the spread above)
-  baseline: shuffled (1000 draws)         -0.003 +/- 0.077
+  baseline: shuffled (1000 draws)         -0.003 +/- 0.076
   baseline: family term only (blend=1)     0.115 +/- 0.026
   baseline: family mean (train, out-of-fold)  -0.101 +/- 0.035
     permuted-family null (1000 draws)        -0.076 +/- 0.107   (observed is -0.23 SD from it — INSIDE the null)
@@ -231,19 +232,30 @@ Spearman (headline)      0.232 (fold-assignment spread 0.023 across 5 seeds)
 family term fallback: 10.6% of predictions (no same-family neighbour retrieved; family term only == neighbour term for these rows)
 
 slate precision (10 candidates, 200 slates x 5 repeats)
-  @3   0.429 +/- 0.044 across repeats   (random 0.300; shuffled null 0.310 +/- 0.234 per slate, SE of null mean 0.007)
-  @5   0.571 +/- 0.010 across repeats   (random 0.500; shuffled null 0.493 +/- 0.167 per slate, SE of null mean 0.005)
+  @3   0.436 +/- 0.022 across repeats   (random 0.300; shuffled null 0.304 +/- 0.231 per slate, SE of null mean 0.007)
+  @5   0.585 +/- 0.009 across repeats   (random 0.500; shuffled null 0.492 +/- 0.170 per slate, SE of null mean 0.005)
     the +/- across repeats is spread over 5 fold partitions of the SAME rows and the null's SE assumes slates are independent when they resample one 172-row pool — both understate uncertainty. Read the gap against the null as a direction, not a measured effect size.
 
 by hook family
-  transformation_tease    n=51    0.224
-  setup_trivial_reveal    n=46    0.023
-  relatable_pov           n=34    0.225
-  reaction_humblebrag     n=33    0.411
+  transformation_tease    n=51    0.243
+  setup_trivial_reveal    n=46    0.170
+  relatable_pov           n=34    0.208
+  reaction_humblebrag     n=33    0.378
   listicle_reveal         n=8     n/a (below 10)
 ```
 
-**Interpretation:** The headline (0.232) sits roughly three sampling-SEs
+**On the shipped family blend.** `FAMILY_PRIOR_BLEND` was 0.3 and is now **0**,
+changed on the strength of this harness. Sweeping it on identical rows and
+folds gave a clean monotone decline — 0 → 0.259, 0.15 → 0.252, 0.3 → 0.232,
+0.5 → 0.194 — and blend 0 held its lead at 15 repeats (0.279 vs 0.252), on a
+different seed (0.250 vs 0.237), and tied on `view_outlier_score` (0.369 vs
+0.368). It was never worse in any configuration tested. Each individual gap
+sits inside the ~0.076 sampling SE; the monotone ordering across four paired
+points is the evidence, not any single pair. **The shipped prior is therefore
+now purely the neighbour mean**, and the family-term lines below are baselines
+rather than components of it.
+
+**Interpretation:** The headline (0.259) sits roughly three sampling-SEs
 (~0.076 each) above the 1000-draw shuffled null, which is now properly
 centred close to zero (−0.003 ± 0.077). It also clears the `family term only`
 figure (0.115) by roughly 0.12 — the closest thing in this report to evidence
@@ -259,8 +271,8 @@ reads −0.076 ± 0.107) and the headline carries only a smaller analogous
 penalty, not none, so the two are not apples-to-apples and this reads as "the
 prior beats a baseline that is itself biased downward," not as a precise 0.33
 margin. That is a real, positive, but modest signal on a thin corpus: description-space
-retrieval plus the app's blended prior orders held-out real titles better
-than chance, but 0.232 is a moderate rank correlation, not a strong one, and
+retrieval plus the app's neighbour-mean prior orders held-out real titles better
+than chance, but 0.259 is a moderate rank correlation, not a strong one, and
 the sampling SE (~0.076) is large enough relative to the headline itself that
 this should be read as "probably better than chance" rather than as a
 precisely known effect size. Per-family results are uneven (0.023 to 0.411,
@@ -289,7 +301,7 @@ prior, retrieval, or the corpus. There is no before/after here.
 What the numbers above legitimately support is a proxy, not a direct
 measurement: **slate precision@5** — rank 10 held-out *real corpus titles* by
 the prior, take the top 5, count how many were genuinely top-5 by ground
-truth — reads **0.571 ± 0.010** (spread across the 5 repeats) against a
+truth — reads **0.585 ± 0.009** (spread across the 5 repeats) against a
 **0.500** analytic random baseline and a **0.493 ± 0.167** measured shuffled
 null (per slate). That is evidence about the ranking signal, not a measurement
 of the shipped feature, because it is measured on corpus titles the app
@@ -301,7 +313,7 @@ time.
 0.500 baseline is a fair stand-in only if the order the model emits titles in
 is uncorrelated with their quality — plausible, but unstated until now and
 untested here; if emission order already carried some quality signal, the true
-improvement is smaller than 0.571 − 0.500.
+improvement is smaller than 0.585 − 0.500.
 
 **On the size of the margin.** The +0.078 gap over the shuffled null is about
 0.47 of one slate's SD, and roughly 15 SEs of the null's *mean* — but that SE

@@ -3,7 +3,23 @@ import type { HookFamily } from '@/lib/hooks/taxonomy';
 
 const FALLBACK_PRIOR = 0.5;
 const NEAREST_K = 5;
-export const FAMILY_PRIOR_BLEND = 0.3; // 30% weight on family-level prior, 70% on neighbors.
+// Weight on the family-level term; the remainder goes to the neighbour mean.
+//
+// Was 0.3. Set to 0 on measurement: the family term never helped and usually
+// hurt. Sweeping it through the eval on identical rows and folds gave a clean
+// monotone decline — 0 -> 0.259, 0.15 -> 0.252, 0.3 -> 0.232, 0.5 -> 0.194 —
+// and blend 0 held its lead at 15 repeats (0.279 vs 0.252), on a different
+// seed (0.250 vs 0.237), and tied on view_outlier_score (0.369 vs 0.368). It
+// was never worse in any configuration tested.
+//
+// Consistent with the taxonomy audit: clustering the 175 title embeddings
+// agrees with the five declared families at chance level (ARI 0.004 against a
+// -0.005 shuffled floor), so a family-mean term has little to add over the
+// neighbours themselves.
+//
+// Kept as a parameter rather than deleted: the eval needs blend=1 to compute
+// its family-term baseline.
+export const FAMILY_PRIOR_BLEND = 0;
 
 export type CorpusNeighbor = {
   hook_family: string;
