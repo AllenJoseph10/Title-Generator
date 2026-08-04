@@ -21,10 +21,11 @@ import { computeTitlePrior } from '@/lib/retrieval/prior';
 const MAX_DURATION_SEC = 60;
 const TARGET_FRAMES = 8;
 
-// Generation still emits 10 candidates; the best DISPLAY_COUNT are shown.
-// The rest are persisted, not discarded — they are the only record of real
-// generations with real priors attached, which is future eval data.
-export const DISPLAY_COUNT = 5;
+// Re-exported for callers that already import from the orchestrator. The
+// definition (and the `displayTitles` read-path helper) lives in
+// ./constants so lightweight API routes can reach it without this module's
+// `server-only` + ffmpeg + provider-SDK graph.
+export { DISPLAY_COUNT } from './constants';
 
 export function selectVisionProvider(id: ProviderId): VisionProvider {
   switch (id) {
