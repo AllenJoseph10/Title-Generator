@@ -19,6 +19,7 @@
 //
 // See docs/superpowers/specs/2026-08-04-eval-harness-design.md and EVAL.md.
 
+import fs from 'node:fs';
 import { loadEnvLocal, requireEnv } from './lib/load-env';
 import { mulberry32, groupByTitle, assignFolds, rowsInFold, type TitleGroup } from './lib/eval-split';
 import { spearman, slatePrecisionAtK, meanSd } from './lib/eval-metrics';
@@ -59,6 +60,17 @@ type Options = {
   blend: number;
   slateSize: number;
   sanity: boolean;
+  // Funnel geometry. Defaults come from lib/retrieval/constants so the eval
+  // measures the shipped configuration; overriding them is how you find out
+  // whether the shipped values are any good. They were chosen by intuition
+  // and never tested.
+  rpcLimit: number;
+  finalK: number;
+  mmrLambda: number;
+  // Swap description vectors for a locally-computed alternative, to test
+  // whether embedding richer text improves retrieval without touching the
+  // corpus. JSON: { "<corpus id>": number[] }.
+  embeddings: string | null;
 };
 
 function parseArgs(argv: string[]): Options {
@@ -69,6 +81,10 @@ function parseArgs(argv: string[]): Options {
     blend: FAMILY_PRIOR_BLEND,
     slateSize: SLATE_SIZE,
     sanity: false,
+    rpcLimit: RPC_LIMIT,
+    finalK: FINAL_K,
+    mmrLambda: MMR_LAMBDA,
+    embeddings: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -76,6 +92,10 @@ function parseArgs(argv: string[]): Options {
     else if (a === '--repeats') o.repeats = parseInt(argv[++i], 10);
     else if (a === '--slate-size') o.slateSize = parseInt(argv[++i], 10);
     else if (a === '--family-blend') o.blend = Number(argv[++i]);
+    else if (a === '--rpc-limit') o.rpcLimit = parseInt(argv[++i], 10);
+    else if (a === '--final-k') o.finalK = parseInt(argv[++i], 10);
+    else if (a === '--mmr-lambda') o.mmrLambda = Number(argv[++i]);
+    else if (a === '--embeddings') o.embeddings = argv[++i];
     else if (a === '--sanity') o.sanity = true;
     else if (a === '--ground-truth') {
       const v = argv[++i];
@@ -88,6 +108,10 @@ function parseArgs(argv: string[]): Options {
   if (!Number.isFinite(o.seed)) throw new Error('--seed requires a number');
   if (!Number.isInteger(o.repeats) || o.repeats < 1) throw new Error('--repeats requires a positive integer');
   if (!(o.blend >= 0 && o.blend <= 1)) throw new Error('--family-blend must be between 0 and 1');
+  if (!Number.isInteger(o.rpcLimit) || o.rpcLimit < 1) throw new Error('--rpc-limit requires a positive integer');
+  if (!Number.isInteger(o.finalK) || o.finalK < 1) throw new Error('--final-k requires a positive integer');
+  if (o.finalK > o.rpcLimit) throw new Error('--final-k cannot exceed --rpc-limit');
+  if (!(o.mmrLambda >= 0 && o.mmrLambda <= 1)) throw new Error('--mmr-lambda must be between 0 and 1');
   return o;
 }
 
@@ -143,17 +167,22 @@ async function loadCorpus(): Promise<Row[]> {
 // Returns the neighbours rather than a score, so the headline and the
 // retrieval-dependent baselines can all be computed from ONE retrieval.
 // Scoring twice would double the runtime for an identical neighbour set.
-function retrieveNeighbors(test: Row, train: Row[], gt: GroundTruth): CorpusNeighbor[] {
+function retrieveNeighbors(
+  test: Row,
+  train: Row[],
+  gt: GroundTruth,
+  funnel: { rpcLimit: number; finalK: number; mmrLambda: number },
+): CorpusNeighbor[] {
   const scored = train.map((t) => ({ row: t, sim: cosineSimilarity(test.descVec, t.descVec) }));
   scored.sort((a, b) => b.sim - a.sim);
 
-  const candidates: MmrCandidate<Row>[] = scored.slice(0, RPC_LIMIT).map((s) => ({
+  const candidates: MmrCandidate<Row>[] = scored.slice(0, funnel.rpcLimit).map((s) => ({
     item: s.row,
     relevance: s.sim,
     embedding: s.row.titleVec, // MMR diversifies as TITLES, as in the app
   }));
 
-  return mmrRerank(candidates, FINAL_K, MMR_LAMBDA).map((c) => ({
+  return mmrRerank(candidates, funnel.finalK, funnel.mmrLambda).map((c) => ({
     hook_family: c.item.hook_family,
     performance_score: c.item[gt],
     embedding: c.item.titleVec,
@@ -289,7 +318,7 @@ function runRepeat(rows: Row[], gt: GroundTruth, opts: Options, seed: number): P
     for (const row of testRows) {
       // One retrieval, multiple scorings — every baseline below reuses the
       // same neighbours and costs only an extra arithmetic pass.
-      const neighbors = retrieveNeighbors(row, train, gt);
+      const neighbors = retrieveNeighbors(row, train, gt, opts);
       const family = row.hook_family as HookFamily;
       const familyFallback = !neighbors.some(
         (n) => n.hook_family === family && n.performance_score !== null,
@@ -421,12 +450,36 @@ async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2));
 
   const rows = await loadCorpus();
+
+  // Optional: score against description vectors built from different source
+  // text, to test whether embedding more of the vision output improves
+  // retrieval. Both sides of every comparison are swapped, because the eval
+  // uses the same column for the held-out query and the training rows — so
+  // the space stays internally consistent, exactly as it must in the app.
+  if (opts.embeddings) {
+    const override = JSON.parse(fs.readFileSync(opts.embeddings, 'utf8')) as Record<string, number[]>;
+    let swapped = 0;
+    for (const r of rows) {
+      const v = override[r.id];
+      if (v) {
+        r.descVec = v;
+        swapped++;
+      }
+    }
+    if (swapped !== rows.length) {
+      throw new Error(
+        `embedding override covers ${swapped}/${rows.length} rows. It must cover every row, ` +
+          `or the comparison mixes two embedding spaces and means nothing.`,
+      );
+    }
+    console.log(`description vectors: overridden from ${opts.embeddings} (${swapped} rows)`);
+  }
   const gt = opts.groundTruth;
   const eligible = rows.filter((r) => r[gt] !== null);
 
   console.log(`eval — ${eligible.length} of ${rows.length} rows scoreable, ` +
     `${FOLDS}-fold x ${opts.repeats} repeats, seed ${opts.seed}`);
-  console.log(`ground truth: ${gt}        funnel: top-${RPC_LIMIT} -> MMR(${FINAL_K}, lambda=${MMR_LAMBDA})`);
+  console.log(`ground truth: ${gt}        funnel: top-${opts.rpcLimit} -> MMR(${opts.finalK}, lambda=${opts.mmrLambda})`);
   console.log(`family blend: ${opts.blend}\n`);
 
   if (opts.sanity) {
