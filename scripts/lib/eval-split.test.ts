@@ -83,7 +83,22 @@ describe('assignFolds', () => {
     const dupeIdx = groups.findIndex((g) => g.key === 'dupe');
     expect(groups[dupeIdx].rows).toHaveLength(2);
     const folds = assignFolds(groups, 5, (g) => g.rows[0].hook_family, mulberry32(3));
-    expect(typeof folds[dupeIdx]).toBe('number');
+
+    // Verify folds array length to catch group-index misalignment
+    expect(folds.length).toBe(groups.length);
+
+    // Expand group→fold to row→fold: map each row to its fold assignment
+    const rowToFold = new Map<{ title: string; hook_family: string }, number>();
+    groups.forEach((group, groupIdx) => {
+      group.rows.forEach((row) => {
+        rowToFold.set(row, folds[groupIdx]);
+      });
+    });
+
+    // Verify all rows of the duplicate title are in the same fold
+    const dupeRows = groups[dupeIdx].rows;
+    const dupleFolds = dupeRows.map((row) => rowToFold.get(row)!);
+    expect(dupleFolds[0]).toBe(dupleFolds[1]);
   });
 
   it('spreads a small stratum across folds instead of clustering it', () => {
