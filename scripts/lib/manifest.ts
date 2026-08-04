@@ -20,6 +20,11 @@ export type ManifestEntry = {
   videoPath?: string;
   outlierMultiplier?: number;
   viewsPerDay?: number;
+  // Set by scripts/refresh-media-urls.ts --admit when a row that was excluded
+  // on the pre-repair view numbers is re-admitted to the pipeline. Records the
+  // status it was rescued from, so a re-admitted row is never indistinguishable
+  // from one that passed the gate first time.
+  readmittedFrom?: string;
   rank?: 'top' | 'bottom';
   duplicateOfHandle?: string;
 
