@@ -454,11 +454,12 @@ async function main(): Promise<void> {
   console.log('  baseline: family mean (in-sample, reference) ' + `${fmt(fma.mean)} +/- ${fmt(fma.sd)}`);
   console.log('  baseline: constant 0.5                     ' + `${fmt(constant)}   (undefined by construction)`);
   console.log('\n  note: the out-of-fold family-mean baseline above is negatively biased under the null ' +
-    'by construction (a leave-fold-out group mean loses variance regardless of whether hook family ' +
-    'has any real effect) — only its comparison to the headline is meaningful, not its sign. The ' +
-    'in-sample figure is the same estimator without that bias, shown for reference: its positive ' +
-    'value is what confirms the out-of-fold negative is the expected leave-out penalty, not a real ' +
-    'anti-correlation.');
+    'by construction (a leave-fold-out group mean loses covariance regardless of whether hook family ' +
+    'has any real effect; the bias scales with family size, not corpus size) — only its comparison to ' +
+    'the headline is meaningful, and even that comparison is directional, not a clean margin, since the ' +
+    'headline carries no equivalent leave-out penalty. The in-sample figure is the same estimator with ' +
+    'the opposite bias (each row contributes to the very mean it is scored against): the two figures ' +
+    'bracket the unbiased value from opposite sides rather than one confirming the other. See EVAL.md.');
 
   console.log(`\nfamily term fallback: ${(fallbackFrac * 100).toFixed(1)}% of predictions ` +
     '(no same-family neighbour retrieved; family term only == neighbour term for these rows)');
@@ -487,9 +488,11 @@ async function main(): Promise<void> {
       'see "family mean (train)" below for the retrieval-free comparison.');
   }
   if (h.mean <= fm.mean) {
-    console.log(`\n!! WARNING: the headline (${fmt(h.mean)}) does not beat the retrieval-free ` +
-      `family-mean baseline (${fmt(fm.mean)} +/- ${fmt(fm.sd)}). Description-space retrieval is ` +
-      'adding nothing over knowing the hook family.');
+    console.log(`\n!! WARNING: the headline (${fmt(h.mean)}) does not beat the out-of-fold ` +
+      `family-mean baseline (${fmt(fm.mean)} +/- ${fmt(fm.sd)}), even though that baseline is itself ` +
+      'biased low by construction (see EVAL.md). This is a stronger warning sign than the raw numbers ' +
+      'suggest and is worth investigating directly — it does not by itself establish that ' +
+      'description-space retrieval adds nothing over hook family.');
   }
 }
 

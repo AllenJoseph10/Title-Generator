@@ -82,21 +82,35 @@ noise and what naive alternatives score:
 This is the single most important thing to understand about the output.
 `family mean (train, out-of-fold)` currently reads **≈ −0.101**. That is
 **not** evidence that hook family is anti-predictive. A leave-fold-out group
-mean necessarily loses variance relative to the row it is being compared
-against — under a genuine no-effect null its expected value is `−σ²/n`, not
-0, purely as an artifact of excluding the test row from its own family's
-mean before scoring it. The bias exists whether or not hook family carries
-any real signal at all.
+mean is negatively biased under the null by construction: each held-out row
+is excluded from its own family's mean before being scored against it, so
+the estimator systematically loses covariance with the row it predicts,
+regardless of whether hook family carries any real signal. The size of that
+bias is governed by how small the families are (8 to 51 rows here), not by
+the total corpus size, and it shows up as a comparatively large correlation
+because the predictor itself takes only a handful of distinct values (one
+per family per fold) — a low-variance predictor turns even a modest
+covariance penalty into a larger-looking correlation. The derivation lives
+in `scripts/eval.ts` (the comment on `Prediction.familyMeanTrain`), not
+reproduced here.
 
-`family mean (in-sample, reference)` (≈ +0.122) is the same estimator without
-that leave-out penalty, printed only to make the bias visible: its positive
-sign is what confirms the out-of-fold negative is the expected leave-out
-penalty, not a real anti-correlation. The gap between the two (≈0.22) is the
-size of that penalty on this corpus.
+`family mean (in-sample, reference)` (≈ +0.122) is the same estimator
+without that leave-out penalty — but it is biased in the *opposite*
+direction, for the mirror-image reason: each row now contributes to the
+very family mean it is being scored against, an upward bias rather than a
+neutral one. The two figures therefore **bracket** the unbiased value from
+opposite sides; neither one confirms the other's magnitude. The gap between
+them (≈0.22) roughly locates the scale of the leave-out penalty, not a
+precise measurement of it.
 
-The only comparison that is meaningful here is the headline against the
-out-of-fold figure — both computed the same way, out-of-fold — not the sign
-of the out-of-fold figure on its own.
+This also means the headline and the out-of-fold family-mean baseline are
+**not** a clean, apples-to-apples comparison. Both are computed out-of-fold,
+but only the baseline carries the group-mean construction penalty described
+above — the headline carries no equivalent penalty. The sign of the
+out-of-fold figure on its own is uninterpretable, and the comparison to the
+headline should be read as **directional** (does the prior do better than a
+baseline that is itself biased low) rather than as a precise numeric
+margin.
 
 **Slate precision** — the product-facing metric. Sample `--slate-size` (10)
 held-out rows, rank by prior, ask how many of the top k were truly top k, over
@@ -105,6 +119,27 @@ held-out rows, rank by prior, ask how many of the top k were truly top k, over
 **By hook family** — families below n=10 print `n/a`. 90 of 175 titles were
 force-fitted into a family with low confidence, so a family scoring near zero
 may be a labelling failure rather than a prior failure.
+
+### If a `!! WARNING` or `!! NOTE` line appears
+
+The script prints these only when a comparison looks bad; the current run
+(below) triggers none of them. If a future run does:
+
+- **`!! WARNING` (shuffled)** — the headline does not clear the shuffled
+  permutation-null baseline plus one SD. The prior is not distinguishable
+  from noise on that run's corpus/config; treat the headline as
+  uninformative until this clears.
+- **`!! NOTE` (family term only)** — the headline does not beat the
+  `family term only` (blend=1) figure. As covered above, that figure is
+  retrieval-dependent, not a retrieval-free baseline, so this note flags a
+  comparison worth a closer look rather than a verdict on retrieval's value.
+- **`!! WARNING` (family mean, out-of-fold)** — the headline does not beat
+  the out-of-fold family-mean baseline. Even though that baseline is itself
+  biased low by construction (see the subsection above), failing to clear it
+  is a stronger signal than the raw numbers alone suggest and is worth
+  investigating. It does **not**, on its own, establish that description-space
+  retrieval adds nothing over hook family — it means the comparison should
+  be examined, not treated as a settled conclusion.
 
 ### On the headline's uncertainty
 
@@ -163,7 +198,7 @@ Spearman (headline)      0.232 (fold-assignment spread 0.023 across 5 seeds)
   baseline: family mean (in-sample, reference) 0.122 +/- 0.000
   baseline: constant 0.5                       n/a   (undefined by construction)
 
-  note: the out-of-fold family-mean baseline above is negatively biased under the null by construction (a leave-fold-out group mean loses variance regardless of whether hook family has any real effect) — only its comparison to the headline is meaningful, not its sign. The in-sample figure is the same estimator without that bias, shown for reference: its positive value is what confirms the out-of-fold negative is the expected leave-out penalty, not a real anti-correlation.
+  note: the out-of-fold family-mean baseline above is negatively biased under the null by construction (a leave-fold-out group mean loses covariance regardless of whether hook family has any real effect; the bias scales with family size, not corpus size) — only its comparison to the headline is meaningful, and even that comparison is directional, not a clean margin, since the headline carries no equivalent leave-out penalty. The in-sample figure is the same estimator with the opposite bias (each row contributes to the very mean it is scored against): the two figures bracket the unbiased value from opposite sides rather than one confirming the other. See EVAL.md.
 
 family term fallback: 10.6% of predictions (no same-family neighbour retrieved; family term only == neighbour term for these rows)
 
@@ -181,10 +216,12 @@ by hook family
 
 **Interpretation:** The headline (0.232) sits roughly three sampling-SEs
 (~0.076 each) above the 1000-draw shuffled null, which is now properly
-centred close to zero (−0.003 ± 0.077). It also clears the genuine
-retrieval-free family-mean baseline (−0.101 ± 0.035, whose negative sign is a
-construction artifact explained above, not a claim about family). That is a
-real, positive, but modest signal on a thin corpus: description-space
+centred close to zero (−0.003 ± 0.077). It is also directionally above the
+out-of-fold family-mean baseline (−0.101 ± 0.035) — but, per the subsection
+above, that baseline is biased low by construction and the two are not a
+clean apples-to-apples comparison, so this reads as "the prior beats a
+baseline that is itself biased downward," not as a precise 0.33 margin. That
+is a real, positive, but modest signal on a thin corpus: description-space
 retrieval plus the app's blended prior orders held-out real titles better
 than chance, but 0.232 is a moderate rank correlation, not a strong one, and
 the sampling SE (~0.076) is large enough relative to the headline itself that
