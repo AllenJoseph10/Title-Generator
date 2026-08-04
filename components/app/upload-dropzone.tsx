@@ -5,6 +5,7 @@ import { motion } from 'framer-motion';
 import { Upload } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { rejectUpload } from '@/lib/storage/constants';
+import { prepareUpload } from '@/lib/media/prepare-upload';
 import { toast } from '@/components/ui/toaster';
 
 type Props = {
@@ -14,19 +15,31 @@ type Props = {
 
 export function UploadDropzone({ onFile, busy }: Props) {
   const [dragOver, setDragOver] = useState(false);
+  const [preparing, setPreparing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Reject here rather than letting /api/upload-url do it. The server check
-  // stays as the real gate — this one exists so the user is told immediately,
-  // in a message that names the limit, instead of after a round trip.
+  // Prepare first, then gate. A 79MB 4K clip shrinks to a couple of MB and
+  // passes a check it would otherwise fail; a file that cannot be prepared
+  // arrives at exactly the same gate it meets today.
+  //
+  // rejectUpload stays the real client-side check — the server runs it too.
+  // It exists so the user is told immediately, in a message that names the
+  // limit, rather than after a round trip.
   const accept = useCallback(
-    (f: File) => {
-      const problem = rejectUpload(f.size, f.type);
+    async (f: File) => {
+      setPreparing(true);
+      let candidate = f;
+      try {
+        candidate = await prepareUpload(f);
+      } finally {
+        setPreparing(false);
+      }
+      const problem = rejectUpload(candidate.size, candidate.type);
       if (problem) {
         toast.error(problem);
         return;
       }
-      onFile(f);
+      onFile(candidate);
     },
     [onFile],
   );
@@ -46,11 +59,11 @@ export function UploadDropzone({ onFile, busy }: Props) {
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: 'easeOut' }}
-      whileHover={busy ? undefined : { scale: 1.005 }}
-      onClick={() => !busy && inputRef.current?.click()}
+      whileHover={busy || preparing ? undefined : { scale: 1.005 }}
+      onClick={() => !busy && !preparing && inputRef.current?.click()}
       onDragOver={(e) => {
         e.preventDefault();
-        if (!busy) setDragOver(true);
+        if (!busy && !preparing) setDragOver(true);
       }}
       onDragLeave={() => setDragOver(false)}
       onDrop={onDrop}
@@ -60,7 +73,7 @@ export function UploadDropzone({ onFile, busy }: Props) {
         dragOver
           ? 'border-accent bg-accent-subtle/30'
           : 'border-border-strong hover:border-ink-muted hover:bg-bg-raised/40',
-        busy && 'pointer-events-none opacity-50',
+        (busy || preparing) && 'pointer-events-none opacity-50',
       )}
     >
       <Upload className="h-6 w-6 text-ink-dim" strokeWidth={1.25} />
@@ -73,7 +86,7 @@ export function UploadDropzone({ onFile, busy }: Props) {
           long before the duration one. Naming the resolution makes the pair
           reachable rather than aspirational. */}
       <p className="text-micro uppercase tracking-[0.12em] text-ink-muted">
-        mp4 or mov · ≤ 50 mb · up to 60s at 1080p
+        {preparing ? 'preparing clip…' : 'mp4 or mov · ≤ 50 mb · up to 60s at 1080p'}
       </p>
       <input
         ref={inputRef}
