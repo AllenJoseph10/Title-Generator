@@ -21,7 +21,7 @@
 
 import { loadEnvLocal, requireEnv } from './lib/load-env';
 import { mulberry32, groupByTitle, assignFolds, rowsInFold, type TitleGroup } from './lib/eval-split';
-import { rankdata, spearman, slatePrecisionAtK, meanSd } from './lib/eval-metrics';
+import { spearman, slatePrecisionAtK, meanSd } from './lib/eval-metrics';
 import { RPC_LIMIT, FINAL_K, MMR_LAMBDA } from '../lib/retrieval/constants';
 import { computeTitlePrior, FAMILY_PRIOR_BLEND, type CorpusNeighbor } from '../lib/retrieval/prior';
 import { cosineSimilarity, mmrRerank, type MmrCandidate } from '../lib/retrieval/mmr';
@@ -183,10 +183,31 @@ type Prediction = {
   // where B is between-family variance and sigma_F^2 is within-family
   // variance; under "no real family effect" E[B] is smaller than the
   // penalty term by construction, leaving Cov < 0 always, regardless of
-  // fold size. So a negative value here is NOT evidence that hook family is
-  // anti-predictive — only the comparison to the headline (computed the
-  // same, out-of-fold, way) is apples-to-apples. `familyMeanAll` below is
-  // the same estimator without the bias, printed for reference only.
+  // fold size.
+  //
+  // SCALE OF THAT PENALTY: with w_F = N_F/N the N_F cancels, leaving
+  // P = (1/N) * sum_F sigma_F^2 * N_F/(N_F-1) ~= k*sigma^2/N. So it is set
+  // by the corpus size N and the family count k, NOT by how small the
+  // families are; family size enters only through N_F/(N_F-1), which spans
+  // 1.02-1.14 on this corpus (a <=14% effect). It shrinks as 1/N, so a
+  // bigger corpus does shrink it.
+  //
+  // NOT UNIQUE TO THIS BASELINE: performance_score is a percentile rank over
+  // a fixed population, so every pairwise covariance is -sigma^2/(N-1) and
+  // ANY mean over a subset excluding row i carries the same covariance
+  // penalty — the headline's neighbour mean included. Subset size does not
+  // change it; what differs is the predictor's variance. The headline's
+  // 5-row neighbour mean has sd ~0.45*sigma against this family mean's
+  // ~0.17*sigma, so in correlation terms the headline's penalty is ~-0.013
+  // against this baseline's ~-0.034 — smaller by roughly 60%, not absent.
+  // The comparison to the headline is therefore NOT apples-to-apples; read
+  // it as directional. See EVAL.md.
+  //
+  // Because the construction-only null (~-0.034) does not on its own account
+  // for the observed value, the eval MEASURES the null rather than asserting
+  // it: see `familyLabelNull` below, which permutes hook_family labels across
+  // rows and recomputes this exact estimator. `familyMeanAll` is the same
+  // estimator with the opposite-signed bias, printed for reference only.
   familyMeanTrain: number;
   // Reference only, NOT used for the headline comparison: the same family
   // mean computed IN-SAMPLE, over every eligible row including the row
@@ -208,27 +229,53 @@ type Prediction = {
 // filtering computeTitlePrior applies internally. A family absent from this
 // fold's training set (possible only for the rarest families) falls back to
 // the same neutral prior the app itself uses when it has nothing to average.
-function familyMeansFromTrain(train: Row[], gt: GroundTruth): Map<string, number> {
+//
+// `familyOf` exists so the permutation null can recompute this identical
+// estimator against shuffled labels without duplicating the arithmetic.
+function familyMeansFromTrain(
+  train: Row[],
+  gt: GroundTruth,
+  familyOf: (r: Row) => string = (r) => r.hook_family,
+): Map<string, number> {
   const sums = new Map<string, { sum: number; n: number }>();
   for (const r of train) {
     const v = r[gt];
     if (v === null) continue;
-    const e = sums.get(r.hook_family) ?? { sum: 0, n: 0 };
+    const key = familyOf(r);
+    const e = sums.get(key) ?? { sum: 0, n: 0 };
     e.sum += v;
     e.n += 1;
-    sums.set(r.hook_family, e);
+    sums.set(key, e);
   }
   const means = new Map<string, number>();
   for (const [family, { sum, n }] of sums) means.set(family, n > 0 ? sum / n : NEUTRAL_PRIOR);
   return means;
 }
 
-function runRepeat(rows: Row[], gt: GroundTruth, opts: Options, seed: number): Prediction[] {
+// One repeat's fold structure. Extracted so the family-label permutation null
+// can reuse the EXACT partition the real baseline was measured on — the null
+// must vary only the labels, not the split.
+type Fold = { test: Row[]; train: Row[] };
+
+function splitFolds(rows: Row[], gt: GroundTruth, seed: number): Fold[] {
   // Rows without a ground truth can train (they are legitimate neighbours,
   // and computeTitlePrior filters nulls out of the mean) but can never test.
   const eligible = rows.filter((r) => r[gt] !== null);
   const groups = groupByTitle(eligible);
-  const folds = assignFolds(groups, FOLDS, (g: TitleGroup<Row>) => g.rows[0].hook_family, mulberry32(seed));
+  const assignment = assignFolds(groups, FOLDS, (g: TitleGroup<Row>) => g.rows[0].hook_family, mulberry32(seed));
+
+  const out: Fold[] = [];
+  for (let f = 0; f < FOLDS; f++) {
+    const test = rowsInFold(groups, assignment, f);
+    if (test.length === 0) continue;
+    const testIds = new Set(test.map((r) => r.id));
+    out.push({ test, train: rows.filter((r) => !testIds.has(r.id)) });
+  }
+  return out;
+}
+
+function runRepeat(rows: Row[], gt: GroundTruth, opts: Options, seed: number): Prediction[] {
+  const eligible = rows.filter((r) => r[gt] !== null);
 
   // In-sample reference: same estimator as familyMeanTrain, but computed
   // over every eligible row (no fold held out). Identical across every fold
@@ -237,12 +284,7 @@ function runRepeat(rows: Row[], gt: GroundTruth, opts: Options, seed: number): P
   const familyMeansAll = familyMeansFromTrain(eligible, gt);
 
   const out: Prediction[] = [];
-  for (let f = 0; f < FOLDS; f++) {
-    const testRows = rowsInFold(groups, folds, f);
-    if (testRows.length === 0) continue;
-    const testIds = new Set(testRows.map((r) => r.id));
-
-    const train = rows.filter((r) => !testIds.has(r.id));
+  for (const { test: testRows, train } of splitFolds(rows, gt, seed)) {
     const familyMeansTrain = familyMeansFromTrain(train, gt);
     for (const row of testRows) {
       // One retrieval, multiple scorings — every baseline below reuses the
@@ -266,24 +308,108 @@ function runRepeat(rows: Row[], gt: GroundTruth, opts: Options, seed: number): P
   return out;
 }
 
+// ------------------------------------------------ family-label permutation null
+
+// The measured null for `family mean (train, out-of-fold)`.
+//
+// The construction penalty derived on Prediction.familyMeanTrain accounts for
+// roughly -0.034 of correlation. The observed baseline is several times more
+// negative than that, and closing the gap requires an assumption about the
+// realized between-family variance — a substantive empirical claim about the
+// taxonomy, not an artefact. So measure it instead of asserting it.
+//
+// The null shuffles WHICH ROW CARRIES WHICH hook_family label and recomputes
+// the identical estimator. Everything else is held fixed: the same fold
+// partition (which stays keyed on the real labels, because that is the
+// partition the real baseline was measured on), the same ground truth, the
+// same leave-fold-out arithmetic. What is left is the construction penalty
+// plus the taxonomy's chance-level between-family variance — exactly the
+// quantity the observed -0.101 needs to be compared against.
+//
+// No retrieval is involved, so this costs milliseconds.
+function familyLabelNull(
+  rows: Row[],
+  folds: Fold[],
+  gt: GroundTruth,
+  draws: number,
+  rand: () => number,
+): number[] {
+  const labels = rows.map((r) => r.hook_family);
+  const permuted = new Map<string, string>();
+  const familyOf = (r: Row) => permuted.get(r.id) as string;
+
+  const out: number[] = [];
+  for (let d = 0; d < draws; d++) {
+    const perm = [...labels];
+    for (let i = perm.length - 1; i > 0; i--) {
+      const j = Math.floor(rand() * (i + 1));
+      [perm[i], perm[j]] = [perm[j], perm[i]];
+    }
+    rows.forEach((r, i) => permuted.set(r.id, perm[i]));
+
+    const pred: number[] = [];
+    const act: number[] = [];
+    for (const { test, train } of folds) {
+      const means = familyMeansFromTrain(train, gt, familyOf);
+      for (const row of test) {
+        pred.push(means.get(familyOf(row)) ?? NEUTRAL_PRIOR);
+        act.push(row[gt] as number);
+      }
+    }
+    const s = spearman(pred, act);
+    if (s !== null) out.push(s);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- reporting
 
 function fmt(x: number | null, places = 3): string {
   return x === null ? '  n/a' : x.toFixed(places);
 }
 
-function slateMean(preds: Prediction[], k: number, size: number, rand: () => number): number {
+// Slate precision@k for one repeat, alongside its own shuffled null.
+//
+// The null shuffles the predicted values WITHIN each slate against that
+// slate's fixed actuals — the same structure as the headline's permutation
+// null, applied per slate. It is what "ranking these 10 at random" actually
+// scores on this data, as opposed to the analytic k/size, and it is the only
+// way to say whether a 0.571-vs-0.500 gap is an edge or a rounding artefact.
+//
+// `shufRand` is a SEPARATE stream from `rand` on purpose: drawing shuffle
+// randomness from the sampling stream would change which rows land in which
+// slate, silently moving the real number the null is supposed to explain.
+//
+// Returns per-slate score arrays rather than means so the caller can report
+// the null's own spread, which is a per-slate quantity.
+function slateScores(
+  preds: Prediction[],
+  k: number,
+  size: number,
+  rand: () => number,
+  shufRand: () => number,
+): { real: number[]; shuffled: number[] } {
   if (preds.length < size) throw new Error(`slate size ${size} exceeds ${preds.length} predictions`);
-  const scores: number[] = [];
+  const real: number[] = [];
+  const shuffled: number[] = [];
   for (let s = 0; s < SLATES; s++) {
     const pool = [...preds];
     const slate: Prediction[] = [];
     for (let i = 0; i < size; i++) {
       slate.push(pool.splice(Math.floor(rand() * pool.length), 1)[0]);
     }
-    scores.push(slatePrecisionAtK(slate.map((p) => p.predicted), slate.map((p) => p.actual), k));
+    const predicted = slate.map((p) => p.predicted);
+    const actual = slate.map((p) => p.actual);
+    real.push(slatePrecisionAtK(predicted, actual, k));
+
+    const shuf = [...predicted];
+    for (let i = shuf.length - 1; i > 0; i--) {
+      const j = Math.floor(shufRand() * (i + 1));
+      [shuf[i], shuf[j]] = [shuf[j], shuf[i]];
+    }
+    shuffled.push(slatePrecisionAtK(shuf, actual, k));
   }
-  return meanSd(scores).mean;
+  return { real, shuffled };
 }
 
 async function main(): Promise<void> {
@@ -304,18 +430,31 @@ async function main(): Promise<void> {
     // spearman(x, x) is an algebraic identity of any correctly-ranking
     // implementation — it returns 1.0 regardless of whether pairing is
     // correct, and it never touches runRepeat, folds or retrieval at all.
-    // It cannot prove the pairing. These two checks run the real pipeline
-    // once and prove pairing instead:
+    // It cannot prove anything. These two checks run the real pipeline once
+    // instead. Check 2 is the falsifiable one; check 1 is a regression guard.
     const preds = runRepeat(rows, gt, opts, opts.seed);
     if (preds.length < 2) throw new Error('sanity: not enough out-of-fold predictions to check pairing');
 
-    // 1. Prediction.actual really belongs to Prediction.row: re-derive the
-    //    ground truth from the row object stored alongside it and confirm
-    //    the two agree exactly. A wrong-row pairing bug would desynchronise
-    //    these two sources even though both ultimately read the same column.
-    const pairing = spearman(preds.map((p) => p.actual), preds.map((p) => p.row[gt] as number));
-    console.log(`sanity 1/2: Prediction.actual matches Prediction.row[${gt}] -> ${fmt(pairing, 6)} (must be 1.000000)`);
-    if (pairing !== 1) throw new Error(`sanity 1/2 FAILED: Prediction.actual is not consistently Prediction.row[${gt}]`);
+    // 1. REGRESSION GUARD, not a live test. As runRepeat is written today
+    //    `row` and `actual` are set in one object literal from the same row
+    //    reference, so this cannot fail — it is asserting an invariant that
+    //    currently holds by construction. It is here to fail LATER, if a
+    //    refactor ever decouples the two (assembling predictions from
+    //    parallel arrays, reordering, merging fold outputs by index). Note
+    //    it is an exact element-wise equality, not a correlation: Spearman
+    //    would return 1.0 for any monotone relationship, so it would pass on
+    //    values that are systematically wrong but consistently ordered.
+    let mismatches = 0;
+    for (const p of preds) if (p.actual !== (p.row[gt] as number)) mismatches++;
+    console.log(`sanity 1/2: Prediction.actual === Prediction.row[${gt}] element-wise over ` +
+      `${preds.length} predictions -> ${mismatches} mismatches (must be 0; regression guard, ` +
+      'cannot fail as runRepeat is written today)');
+    if (mismatches > 0) {
+      throw new Error(
+        `sanity 1/2 FAILED: ${mismatches} of ${preds.length} predictions have an ` +
+        `actual that is not Prediction.row[${gt}] — row/actual pairing has been decoupled`,
+      );
+    }
 
     // 2. The headline genuinely depends on alignment. Rotate the predicted
     //    values against the fixed actuals — a cheap, fully deterministic way
@@ -376,8 +515,11 @@ async function main(): Promise<void> {
   const familyTermBase: number[] = [];
   const familyMeanBase: number[] = [];
   const familyMeanAllBase: number[] = [];
+  const familyLabelNullDraws: number[] = [];
   const p3: number[] = [];
   const p5: number[] = [];
+  const p3Null: number[] = [];
+  const p5Null: number[] = [];
   const perFamily = new Map<string, { pred: number[]; act: number[] }>();
   let fallbackCount = 0;
   let predictionCount = 0;
@@ -418,8 +560,25 @@ async function main(): Promise<void> {
       if (sb !== null) shuffledBase.push(sb);
     }
 
-    p3.push(slateMean(preds, 3, opts.slateSize, mulberry32(seed ^ 0xa11ce)));
-    p5.push(slateMean(preds, 5, opts.slateSize, mulberry32(seed ^ 0xb0b)));
+    // Measured null for the out-of-fold family-mean baseline: same folds,
+    // same estimator, hook_family labels shuffled across rows. Same draw
+    // count as the shuffled null above, for the same reason.
+    for (const s of familyLabelNull(
+      rows,
+      splitFolds(rows, gt, seed),
+      gt,
+      NULL_DRAWS_PER_REPEAT,
+      mulberry32(seed ^ 0xfa3111),
+    )) {
+      familyLabelNullDraws.push(s);
+    }
+
+    const s3 = slateScores(preds, 3, opts.slateSize, mulberry32(seed ^ 0xa11ce), mulberry32(seed ^ 0x5171e3));
+    const s5 = slateScores(preds, 5, opts.slateSize, mulberry32(seed ^ 0xb0b), mulberry32(seed ^ 0x5171e5));
+    p3.push(meanSd(s3.real).mean);
+    p5.push(meanSd(s5.real).mean);
+    p3Null.push(...s3.shuffled);
+    p5Null.push(...s5.shuffled);
 
     for (const p of preds) {
       const e = perFamily.get(p.row.hook_family) ?? { pred: [], act: [] };
@@ -438,6 +597,13 @@ async function main(): Promise<void> {
   const ft = meanSd(familyTermBase);
   const fm = meanSd(familyMeanBase);
   const fma = meanSd(familyMeanAllBase);
+  const fln = meanSd(familyLabelNullDraws);
+  // How far the observed out-of-fold family-mean baseline sits from its own
+  // measured null, in that null's SDs. Inside ~2 SD means the value is fully
+  // explained by construction plus chance-level between-family variance;
+  // outside means hook family is measurably anti-predictive out-of-fold.
+  const flZ = fln.sd > 0 ? (fm.mean - fln.mean) / fln.sd : 0;
+  const flInside = Math.abs(flZ) <= 2;
   // Analytic SE of Spearman's rho under independence, ~1/sqrt(n-1). This is
   // the dominant source of uncertainty in the headline — roughly 3x h.sd,
   // which only measures sensitivity to fold partition over the SAME 172 rows.
@@ -451,22 +617,43 @@ async function main(): Promise<void> {
   console.log(`  baseline: shuffled (${shuffledBase.length} draws)`.padEnd(42) + `${fmt(sb.mean)} +/- ${fmt(sb.sd)}`);
   console.log('  baseline: family term only (blend=1)     ' + `${fmt(ft.mean)} +/- ${fmt(ft.sd)}`);
   console.log('  baseline: family mean (train, out-of-fold)  ' + `${fmt(fm.mean)} +/- ${fmt(fm.sd)}`);
+  console.log(`    permuted-family null (${familyLabelNullDraws.length} draws)`.padEnd(45) +
+    `${fmt(fln.mean)} +/- ${fmt(fln.sd)}   ` +
+    `(observed is ${flZ >= 0 ? '+' : ''}${flZ.toFixed(2)} SD from it — ` +
+    `${flInside ? 'INSIDE the null' : 'OUTSIDE the null'})`);
   console.log('  baseline: family mean (in-sample, reference) ' + `${fmt(fma.mean)} +/- ${fmt(fma.sd)}`);
   console.log('  baseline: constant 0.5                     ' + `${fmt(constant)}   (undefined by construction)`);
-  console.log('\n  note: the out-of-fold family-mean baseline above is negatively biased under the null ' +
-    'by construction (a leave-fold-out group mean loses covariance regardless of whether hook family ' +
-    'has any real effect; the bias scales with family size, not corpus size) — only its comparison to ' +
-    'the headline is meaningful, and even that comparison is directional, not a clean margin, since the ' +
-    'headline carries no equivalent leave-out penalty. The in-sample figure is the same estimator with ' +
-    'the opposite bias (each row contributes to the very mean it is scored against): the two figures ' +
-    'bracket the unbiased value from opposite sides rather than one confirming the other. See EVAL.md.');
+  console.log('\n  note: the out-of-fold family-mean baseline is negatively biased under the null by ' +
+    'construction (a leave-fold-out group mean loses covariance whether or not hook family has any ' +
+    'real effect; the penalty is ~k*sigma^2/N, set by corpus size and family count). The permuted-family ' +
+    'null above measures that bias directly, by reshuffling which row carries which hook_family label ' +
+    (flInside
+      ? 'and rerunning the same estimator: the observed value sits inside it, so the negative sign is ' +
+        'construction plus chance, not evidence about the taxonomy. '
+      : 'and rerunning the same estimator: the observed value sits OUTSIDE it, so hook family is mildly ' +
+        'anti-predictive out-of-fold on this corpus beyond what construction explains. ') +
+    'The headline carries a smaller analogous penalty (every subset mean excluding row i does, on a ' +
+    'percentile-rank ground truth) — smaller because the prior\'s predictor varies far more than a ' +
+    'family mean does — so the two are directional, not a clean margin. The in-sample figure is the ' +
+    'same estimator with the opposite bias. See EVAL.md.');
 
   console.log(`\nfamily term fallback: ${(fallbackFrac * 100).toFixed(1)}% of predictions ` +
     '(no same-family neighbour retrieved; family term only == neighbour term for these rows)');
 
+  const m3 = meanSd(p3);
+  const m5 = meanSd(p5);
+  const n3 = meanSd(p3Null);
+  const n5 = meanSd(p5Null);
   console.log(`\nslate precision (${opts.slateSize} candidates, ${SLATES} slates x ${opts.repeats} repeats)`);
-  console.log(`  @3   ${fmt(meanSd(p3).mean)}   (random ${(3 / opts.slateSize).toFixed(3)})`);
-  console.log(`  @5   ${fmt(meanSd(p5).mean)}   (random ${(5 / opts.slateSize).toFixed(3)})`);
+  const slateLine = (k: number, m: { mean: number; sd: number }, n: { mean: number; sd: number }, draws: number) =>
+    `  @${k}   ${fmt(m.mean)} +/- ${fmt(m.sd)} across repeats   ` +
+    `(random ${(k / opts.slateSize).toFixed(3)}; shuffled null ${fmt(n.mean)} +/- ${fmt(n.sd)} per slate, ` +
+    `SE of null mean ${(n.sd / Math.sqrt(draws)).toFixed(3)})`;
+  console.log(slateLine(3, m3, n3, p3Null.length));
+  console.log(slateLine(5, m5, n5, p5Null.length));
+  console.log('    the +/- across repeats is spread over 5 fold partitions of the SAME rows and the ' +
+    'null\'s SE assumes slates are independent when they resample one 172-row pool — both understate ' +
+    'uncertainty. Read the gap against the null as a direction, not a measured effect size.');
 
   console.log('\nby hook family');
   const families = [...perFamily.entries()].sort((a, b) => b[1].pred.length - a[1].pred.length);

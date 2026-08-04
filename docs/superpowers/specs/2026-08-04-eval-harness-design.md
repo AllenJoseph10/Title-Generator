@@ -156,7 +156,7 @@ A Spearman of 0.15 reads as a result until the shuffled baseline also returns 0.
 | Constant 0.5 | Degenerate, must yield undefined/zero |
 | Family mean only | The neighbour search adds nothing over knowing the hook family |
 
-The third is the demanding one. If the headline does not beat family-mean-only, description-space retrieval is contributing nothing and that is the finding.
+The third is the demanding one, but the claim originally made for it was retracted during review and does **not** hold: failing to beat family-mean-only would not show that description-space retrieval contributes nothing. The out-of-fold family mean is negatively biased by construction (≈ `k·σ²/N`), the headline carries a smaller analogous penalty rather than none, and `family term only` is itself retrieval-dependent — so the comparison is directional, not a verdict. See EVAL.md, "The out-of-fold family-mean baseline is biased low — and the eval measures it".
 
 **All three are computed inside the default run**, not by re-invoking with flags. The family-only baseline re-scores the same folds with `blend = 1`, which reuses the already-retrieved neighbours and costs one extra arithmetic pass — no second retrieval. `--family-blend` (§6.5) exists separately, to override the *headline* configuration for ablation.
 
