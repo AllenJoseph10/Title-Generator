@@ -13,7 +13,9 @@
 //   npm run eval -- --sanity
 //
 // Zero API calls: every embedding already exists in Postgres. Deterministic
-// for a given seed. Always exits 0 — this is a measurement, not a gate.
+// for a given seed. The main report always exits 0 — it is a measurement,
+// not a gate. --sanity is the one exception: it is a self-check on the
+// harness itself, and it fails loudly (non-zero exit) if pairing is broken.
 //
 // See docs/superpowers/specs/2026-08-04-eval-harness-design.md and EVAL.md.
 
@@ -32,6 +34,11 @@ const SLATES = 200;
 const SLATE_SIZE = 10;
 const MIN_FAMILY_N = 10;
 const PAGE = 25; // 25 rows x 2 vectors x 1536 floats is ~3MB per response.
+const NULL_DRAWS_PER_REPEAT = 200; // 200 x 5 repeats = 1000 permutation-null draws.
+
+// Mirrors prior.ts's private FALLBACK_PRIOR. Not imported: prior.ts does not
+// export it, and this task is scoped to eval.ts only — prior.ts stays untouched.
+const NEUTRAL_PRIOR = 0.5;
 
 type GroundTruth = 'performance_score' | 'view_outlier_score';
 
@@ -134,8 +141,8 @@ async function loadCorpus(): Promise<Row[]> {
 // to exclude held-out rows, and it imports 'server-only'.
 //
 // Returns the neighbours rather than a score, so the headline and the
-// family-only baseline can both be computed from ONE retrieval. Scoring twice
-// would double the runtime for an identical neighbour set.
+// retrieval-dependent baselines can all be computed from ONE retrieval.
+// Scoring twice would double the runtime for an identical neighbour set.
 function retrieveNeighbors(test: Row, train: Row[], gt: GroundTruth): CorpusNeighbor[] {
   const scored = train.map((t) => ({ row: t, sim: cosineSimilarity(test.descVec, t.descVec) }));
   scored.sort((a, b) => b.sim - a.sim);
@@ -155,7 +162,48 @@ function retrieveNeighbors(test: Row, train: Row[], gt: GroundTruth): CorpusNeig
 
 // ---------------------------------------------------------------- one repeat
 
-type Prediction = { row: Row; predicted: number; familyOnly: number; actual: number };
+type Prediction = {
+  row: Row;
+  predicted: number;
+  // blend=1 through computeTitlePrior: NOT a retrieval-free family baseline.
+  // prior.ts's familyMean is computed over the same MMR-selected neighbours
+  // that produced `predicted`, so this varies with retrieval per row and,
+  // when none of a row's neighbours share its family, prior.ts falls back to
+  // familyMean = neighborMean — making this byte-identical to `predicted`'s
+  // neighbour term for that row. See `familyFallback` below.
+  familyTermOnly: number;
+  // Genuine retrieval-free baseline: mean ground truth of the row's hook
+  // family over the fold's TRAINING set — one value per family, no MMR, no
+  // per-row retrieval dependence.
+  familyMeanTrain: number;
+  // True when computeTitlePrior's family term had no same-family neighbour
+  // to average (prior.ts:51-54), so it fell back to the neighbour mean and
+  // `familyTermOnly` above equals the neighbour term rather than measuring
+  // anything family-specific for this row.
+  familyFallback: boolean;
+  actual: number;
+};
+
+// Retrieval-free: the mean ground truth of each hook family across the
+// fold's training rows only (no per-row MMR, no neighbour dependence).
+// Rows with a null ground truth cannot contribute to the mean, same
+// filtering computeTitlePrior applies internally. A family absent from this
+// fold's training set (possible only for the rarest families) falls back to
+// the same neutral prior the app itself uses when it has nothing to average.
+function familyMeansFromTrain(train: Row[], gt: GroundTruth): Map<string, number> {
+  const sums = new Map<string, { sum: number; n: number }>();
+  for (const r of train) {
+    const v = r[gt];
+    if (v === null) continue;
+    const e = sums.get(r.hook_family) ?? { sum: 0, n: 0 };
+    e.sum += v;
+    e.n += 1;
+    sums.set(r.hook_family, e);
+  }
+  const means = new Map<string, number>();
+  for (const [family, { sum, n }] of sums) means.set(family, n > 0 ? sum / n : NEUTRAL_PRIOR);
+  return means;
+}
 
 function runRepeat(rows: Row[], gt: GroundTruth, opts: Options, seed: number): Prediction[] {
   // Rows without a ground truth can train (they are legitimate neighbours,
@@ -171,15 +219,21 @@ function runRepeat(rows: Row[], gt: GroundTruth, opts: Options, seed: number): P
     const testIds = new Set(testRows.map((r) => r.id));
 
     const train = rows.filter((r) => !testIds.has(r.id));
+    const familyMeansTrain = familyMeansFromTrain(train, gt);
     for (const row of testRows) {
-      // One retrieval, two scorings — the family-only baseline reuses the
+      // One retrieval, multiple scorings — every baseline below reuses the
       // same neighbours and costs only an extra arithmetic pass.
       const neighbors = retrieveNeighbors(row, train, gt);
       const family = row.hook_family as HookFamily;
+      const familyFallback = !neighbors.some(
+        (n) => n.hook_family === family && n.performance_score !== null,
+      );
       out.push({
         row,
         predicted: computeTitlePrior(row.titleVec, family, neighbors, opts.blend),
-        familyOnly: computeTitlePrior(row.titleVec, family, neighbors, 1),
+        familyTermOnly: computeTitlePrior(row.titleVec, family, neighbors, 1),
+        familyMeanTrain: familyMeansTrain.get(row.hook_family) ?? NEUTRAL_PRIOR,
+        familyFallback,
         actual: row[gt] as number,
       });
     }
@@ -222,24 +276,79 @@ async function main(): Promise<void> {
   console.log(`family blend: ${opts.blend}\n`);
 
   if (opts.sanity) {
-    // Feed each row's own ground truth back as its prediction. Anything other
-    // than exactly 1.0 means the metric or the pairing is miswired.
-    const s = spearman(eligible.map((r) => r[gt] as number), eligible.map((r) => r[gt] as number));
-    console.log(`sanity: ground truth against itself -> ${fmt(s, 6)} (must be 1.000000)`);
+    // spearman(x, x) is an algebraic identity of any correctly-ranking
+    // implementation — it returns 1.0 regardless of whether pairing is
+    // correct, and it never touches runRepeat, folds or retrieval at all.
+    // It cannot prove the pairing. These two checks run the real pipeline
+    // once and prove pairing instead:
+    const preds = runRepeat(rows, gt, opts, opts.seed);
+    if (preds.length < 2) throw new Error('sanity: not enough out-of-fold predictions to check pairing');
+
+    // 1. Prediction.actual really belongs to Prediction.row: re-derive the
+    //    ground truth from the row object stored alongside it and confirm
+    //    the two agree exactly. A wrong-row pairing bug would desynchronise
+    //    these two sources even though both ultimately read the same column.
+    const pairing = spearman(preds.map((p) => p.actual), preds.map((p) => p.row[gt] as number));
+    console.log(`sanity 1/2: Prediction.actual matches Prediction.row[${gt}] -> ${fmt(pairing, 6)} (must be 1.000000)`);
+    if (pairing !== 1) throw new Error(`sanity 1/2 FAILED: Prediction.actual is not consistently Prediction.row[${gt}]`);
+
+    // 2. The headline genuinely depends on alignment. Rotate the predicted
+    //    values against the fixed actuals — a cheap, fully deterministic way
+    //    to break every pairing without touching RNG state — and confirm the
+    //    correlation collapses. If it did not collapse, the metric would be
+    //    insensitive to which prediction goes with which row, which is
+    //    exactly the bug this check exists to catch.
+    //
+    //    A single rotation by one index is too noisy to threshold reliably:
+    //    tried first, it produced -0.141 against a real headline of 0.266 at
+    //    --seed 99 — well within one shuffled-baseline SD (~0.077, measured
+    //    elsewhere in this file) of zero, but a naive "must be under half the
+    //    real value" bound flagged it as a failure anyway. A single rotation
+    //    IS just one draw from that same noisy null. Averaging the |correlation|
+    //    over several distinct, fixed rotation offsets divides that noise by
+    //    roughly sqrt(offsets), the same variance-reduction the permutation
+    //    null gets from its 1000 draws, while staying fully deterministic.
+    const predicted = preds.map((p) => p.predicted);
+    const actual = preds.map((p) => p.actual);
+    const real = spearman(predicted, actual);
+    const offsets = Array.from({ length: Math.min(10, predicted.length - 1) }, (_, i) => i + 1);
+    const rotatedMags = offsets.map((k) => {
+      const rotated = [...predicted.slice(k), ...predicted.slice(0, k)];
+      const s = spearman(rotated, actual);
+      return Math.abs(s ?? 0);
+    });
+    const brokenMag = rotatedMags.reduce((a, b) => a + b, 0) / rotatedMags.length;
+    console.log(`sanity 2/2: real headline ${fmt(real, 6)} vs mean |rotated-pairing headline| ` +
+      `${brokenMag.toFixed(6)} over ${offsets.length} fixed rotation offsets ` +
+      '(rotated must collapse toward 0, well below the real value)');
+    const realMag = Math.abs(real ?? 0);
+    if (real === null || !(brokenMag < realMag * 0.5)) {
+      throw new Error(
+        `sanity 2/2 FAILED: mean rotated-pairing magnitude (${brokenMag.toFixed(6)}) did not collapse ` +
+        `relative to the real headline (${fmt(real, 6)}) — the correlation may not depend on alignment`,
+      );
+    }
+
+    console.log('\nsanity: PASS — pairing is correct and the headline depends on it.');
     return;
   }
 
   const headline: number[] = [];
   const shuffledBase: number[] = [];
-  const familyBase: number[] = [];
+  const familyTermBase: number[] = [];
+  const familyMeanBase: number[] = [];
   const p3: number[] = [];
   const p5: number[] = [];
   const perFamily = new Map<string, { pred: number[]; act: number[] }>();
+  let fallbackCount = 0;
+  let predictionCount = 0;
+  let sampleN = 0;
 
   for (let rep = 0; rep < opts.repeats; rep++) {
     const seed = opts.seed + rep * 1000;
     const preds = runRepeat(rows, gt, opts, seed);
     const rand = mulberry32(seed ^ 0x5eed);
+    sampleN = preds.length; // identical every repeat: every eligible row tested exactly once.
 
     const predicted = preds.map((p) => p.predicted);
     const actual = preds.map((p) => p.actual);
@@ -247,17 +356,25 @@ async function main(): Promise<void> {
     const h = spearman(predicted, actual);
     if (h !== null) headline.push(h);
 
-    const fb = spearman(preds.map((p) => p.familyOnly), actual);
-    if (fb !== null) familyBase.push(fb);
+    const ft = spearman(preds.map((p) => p.familyTermOnly), actual);
+    if (ft !== null) familyTermBase.push(ft);
 
-    // Shuffle the predictions against fixed actuals: same distribution, no signal.
-    const shuf = [...predicted];
-    for (let i = shuf.length - 1; i > 0; i--) {
-      const j = Math.floor(rand() * (i + 1));
-      [shuf[i], shuf[j]] = [shuf[j], shuf[i]];
+    const fm = spearman(preds.map((p) => p.familyMeanTrain), actual);
+    if (fm !== null) familyMeanBase.push(fm);
+
+    // Permutation null: shuffle predictions against fixed actuals, same
+    // distribution, no signal. NULL_DRAWS_PER_REPEAT draws per repeat
+    // (1000 total across 5 repeats) — 5 draws badly undercharacterises a
+    // null whose own mean has an SE comparable to its value.
+    for (let draw = 0; draw < NULL_DRAWS_PER_REPEAT; draw++) {
+      const shuf = [...predicted];
+      for (let i = shuf.length - 1; i > 0; i--) {
+        const j = Math.floor(rand() * (i + 1));
+        [shuf[i], shuf[j]] = [shuf[j], shuf[i]];
+      }
+      const sb = spearman(shuf, actual);
+      if (sb !== null) shuffledBase.push(sb);
     }
-    const sb = spearman(shuf, actual);
-    if (sb !== null) shuffledBase.push(sb);
 
     p3.push(slateMean(preds, 3, opts.slateSize, mulberry32(seed ^ 0xa11ce)));
     p5.push(slateMean(preds, 5, opts.slateSize, mulberry32(seed ^ 0xb0b)));
@@ -267,6 +384,8 @@ async function main(): Promise<void> {
       e.pred.push(p.predicted);
       e.act.push(p.actual);
       perFamily.set(p.row.hook_family, e);
+      predictionCount++;
+      if (p.familyFallback) fallbackCount++;
     }
   }
 
@@ -274,12 +393,25 @@ async function main(): Promise<void> {
 
   const h = meanSd(headline);
   const sb = meanSd(shuffledBase);
-  const fb = meanSd(familyBase);
+  const ft = meanSd(familyTermBase);
+  const fm = meanSd(familyMeanBase);
+  // Analytic SE of Spearman's rho under independence, ~1/sqrt(n-1). This is
+  // the dominant source of uncertainty in the headline — roughly 3x h.sd,
+  // which only measures sensitivity to fold partition over the SAME 172 rows.
+  const samplingSE = 1 / Math.sqrt(sampleN - 1);
+  const fallbackFrac = predictionCount > 0 ? fallbackCount / predictionCount : 0;
 
-  console.log('Spearman (headline)      ' + `${fmt(h.mean)} +/- ${fmt(h.sd)}`);
-  console.log('  baseline: shuffled     ' + `${fmt(sb.mean)} +/- ${fmt(sb.sd)}`);
-  console.log('  baseline: family-only  ' + `${fmt(fb.mean)} +/- ${fmt(fb.sd)}`);
-  console.log('  baseline: constant 0.5 ' + `${fmt(constant)}   (undefined by construction)`);
+  console.log('Spearman (headline)      ' +
+    `${fmt(h.mean)} (fold-assignment spread ${fmt(h.sd)} across ${opts.repeats} seeds)`);
+  console.log(`  sampling SE (n=${sampleN})   ~${samplingSE.toFixed(3)}  ` +
+    '(analytic, 1/sqrt(n-1) — the dominant uncertainty, not the spread above)');
+  console.log('  baseline: shuffled (1000 draws)          ' + `${fmt(sb.mean)} +/- ${fmt(sb.sd)}`);
+  console.log('  baseline: family term only (blend=1)     ' + `${fmt(ft.mean)} +/- ${fmt(ft.sd)}`);
+  console.log('  baseline: family mean (train)            ' + `${fmt(fm.mean)} +/- ${fmt(fm.sd)}`);
+  console.log('  baseline: constant 0.5                     ' + `${fmt(constant)}   (undefined by construction)`);
+
+  console.log(`\nfamily term fallback: ${(fallbackFrac * 100).toFixed(1)}% of predictions ` +
+    '(no same-family neighbour retrieved; family term only == neighbour term for these rows)');
 
   console.log(`\nslate precision (${opts.slateSize} candidates, ${SLATES} slates x ${opts.repeats} repeats)`);
   console.log(`  @3   ${fmt(meanSd(p3).mean)}   (random ${(3 / opts.slateSize).toFixed(3)})`);
@@ -295,16 +427,25 @@ async function main(): Promise<void> {
 
   if (h.mean <= sb.mean + sb.sd) {
     console.log(`\n!! WARNING: the headline (${fmt(h.mean)}) does not clear the shuffled ` +
-      `baseline (${fmt(sb.mean)} +/- ${fmt(sb.sd)}).`);
+      `permutation-null baseline (${fmt(sb.mean)} +/- ${fmt(sb.sd)}).`);
     console.log('   The prior is not distinguishable from noise on this corpus. See EVAL.md.');
   }
-  if (h.mean <= fb.mean) {
-    console.log(`\n!! WARNING: the headline (${fmt(h.mean)}) does not beat family-only ` +
-      `(${fmt(fb.mean)}). Description-space retrieval is adding nothing over the hook family.`);
+  if (h.mean <= ft.mean) {
+    console.log(`\n!! NOTE: the headline (${fmt(h.mean)}) does not beat "family term only" ` +
+      `(${fmt(ft.mean)} +/- ${fmt(ft.sd)}). This compares the neighbour term against the family ` +
+      'term of the SAME prior computation (retrieval-dependent, not a retrieval-free baseline) — ' +
+      'see "family mean (train)" below for the retrieval-free comparison.');
+  }
+  if (h.mean <= fm.mean) {
+    console.log(`\n!! WARNING: the headline (${fmt(h.mean)}) does not beat the retrieval-free ` +
+      `family-mean baseline (${fmt(fm.mean)} +/- ${fmt(fm.sd)}). Description-space retrieval is ` +
+      'adding nothing over knowing the hook family.');
   }
 }
 
-// Always exit 0: a measurement that fails the build gets muted or deleted.
+// A completed report always exits 0: a measurement that fails the build gets
+// muted or deleted. An uncaught error here (env missing, corpus load failure,
+// or a failed --sanity check) is the one path that exits non-zero.
 main().catch((e) => {
   console.error(`\n${(e as Error).message}`);
   process.exit(1);
