@@ -7,15 +7,23 @@ const FAMILY_PRIOR_BLEND = 0.3; // 30% weight on family-level prior, 70% on neig
 
 export type CorpusNeighbor = {
   hook_family: string;
-  save_rate_estimate: number | null;
+  performance_score: number | null;
   embedding: number[];
 };
 
 // Compute the templateSimilarityPrior for one generated title.
-// Definition: mean save_rate_estimate of the K nearest corpus neighbors to the
-// generated title's embedding, blended with the average save_rate_estimate of
+// Definition: mean performance_score of the K nearest corpus neighbors to the
+// generated title's embedding, blended with the average performance_score of
 // the title's own hook_family (so we still produce a reasonable signal when
 // neighbors are sparse).
+//
+// `embedding` here is TITLE-space — nearest means "phrased similarly", not
+// "from a similar-looking video". Retrieval already narrowed the candidates
+// to visually similar videos; this ranks by how the line itself is written.
+//
+// A null performance_score is filtered out rather than read as zero: three
+// corpus rows are genuinely unmeasured, and counting them as failures would
+// drag down every title phrased like them.
 export function computeTitlePrior(
   generatedEmbedding: number[],
   generatedFamily: HookFamily,
@@ -27,19 +35,19 @@ export function computeTitlePrior(
     .filter((n) => n.embedding && n.embedding.length === generatedEmbedding.length)
     .map((n) => ({
       similarity: cosineSimilarity(generatedEmbedding, n.embedding),
-      saveRate: n.save_rate_estimate,
+      score: n.performance_score,
     }));
   if (scored.length === 0) return FALLBACK_PRIOR;
 
   scored.sort((a, b) => b.similarity - a.similarity);
-  const top = scored.slice(0, NEAREST_K).filter((s) => s.saveRate !== null);
+  const top = scored.slice(0, NEAREST_K).filter((s) => s.score !== null);
   const neighborMean = top.length > 0
-    ? top.reduce((s, x) => s + (x.saveRate ?? 0), 0) / top.length
+    ? top.reduce((s, x) => s + (x.score ?? 0), 0) / top.length
     : FALLBACK_PRIOR;
 
-  const familyRates = neighbors.filter((n) => n.hook_family === generatedFamily && n.save_rate_estimate !== null);
+  const familyRates = neighbors.filter((n) => n.hook_family === generatedFamily && n.performance_score !== null);
   const familyMean = familyRates.length > 0
-    ? familyRates.reduce((s, n) => s + (n.save_rate_estimate ?? 0), 0) / familyRates.length
+    ? familyRates.reduce((s, n) => s + (n.performance_score ?? 0), 0) / familyRates.length
     : neighborMean;
 
   const blended = (1 - FAMILY_PRIOR_BLEND) * neighborMean + FAMILY_PRIOR_BLEND * familyMean;
