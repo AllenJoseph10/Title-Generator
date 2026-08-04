@@ -3,10 +3,7 @@ import { db } from '@/lib/db/client';
 import type { CorpusTitle } from '@/lib/providers/types';
 import { isHookFamily } from '@/lib/hooks/taxonomy';
 import { mmrRerank, type MmrCandidate } from './mmr';
-
-const RPC_LIMIT = 30;
-const FINAL_K = 8;
-const MMR_LAMBDA = 0.6; // Slight tilt toward diversity over pure relevance.
+import { RPC_LIMIT, FINAL_K, MMR_LAMBDA } from './constants';
 
 export type RetrievedRow = {
   id: string;
