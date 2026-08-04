@@ -6,7 +6,7 @@ Dataset-extraction work for the silent-video title generator. Read this first; i
 
 ## What the project is
 
-A Next.js app: upload a silent short-form video → get 10 ranked burned-in title ideas in a creator's voice. Pipeline is `upload → ffmpeg frames → vision description → embed → pgvector retrieval → generate → prior score`.
+A Next.js app: upload a silent short-form video → get burned-in title ideas in a creator's voice. Pipeline is `upload → ffmpeg frames → vision description → embed → pgvector retrieval → generate → prior score`. **The app generates 10 candidates and displays the best 5** (sorted by prior) — see OPEN ITEMS for the deviation from the client brief's 10.
 
 Subject creator is **`henryjwade`** on Instagram (the builder brief anonymises him as "William Wade" / `william_j_wade`; scraped data uses the real handle).
 
@@ -113,12 +113,14 @@ The brief's claim that `saves` is "the most valuable column" is **obsolete** —
 1. **Push the branch** and message Allen.
 2. **175 rows vs the 200 floor.** Cause: 19% of B-roll had no burned-in title at all (spec assumed ~2%). Needs ~30 more scraped videos. `datasets/raw/_metrics-refresh-report.md` lists 161 already-scraped rejects that would now pass the corrected gate (~$15 of OCR + descriptions to add).
 3. **Known bug:** `scripts/refresh-metrics.ts` applies the *outliers* gate to `henryjwade`, who was scraped in *top-bottom* mode. Its 3 "new candidates" for him are mid-pack, not top-50 — **not recommended for addition**. Fix before trusting that section again.
+4. **Display-count deviation from the client brief — Allen needs to be told, not left to discover it.** The builder brief specifies 10 ranked title ideas. The app now generates 10 candidates, sorts them by `templateSimilarityPrior`, and displays only the best 5 (`DISPLAY_COUNT = 5` in `lib/generation/orchestrator.ts`). This is a real product change, not a bug, and it was made to surface the eval's ranking signal rather than raw emission order — but it is a project-owner decision, not an engineering call, and has not been run past Allen.
+5. **Outstanding interactive UI check.** Nobody has confirmed in an actual browser that the 5 displayed titles render in descending badge/prior strength (i.e., that the sort from Task 6 actually reaches the UI as expected, not just the API response). A subagent could not drive a browser to check this — it needs a human to open the app, generate titles, and look.
 
 ## REMAINING WORK (deliverables 2–5)
 
 - ~~**Schema + retrieval**~~ — **DONE 2026-08-03**, see "Retrieval fixed and the real corpus is live" below.
 - ~~**`scripts/import-dataset.mjs`** (deliverable 2)~~ — **DONE 2026-08-03** as `scripts/import-dataset.ts`. The `lib/hooks/classify.ts` gap it flagged (that function returns ≥3 *candidate* families from a vision description and is not a single-label title classifier) was filled with a batched Claude pass inside the importer — but see the 51% low-confidence finding below.
-- **`scripts/eval.mjs` + `EVAL.md`** (deliverable 4) — the experiment to run is whether `performance_score` or `view_outlier_score` better predicts held-out performance. They agree only moderately (0.410), so they will disagree on a meaningful fraction of rows.
+- ~~**`scripts/eval.ts` + `EVAL.md`** (deliverable 4)~~ — **DONE 2026-08-04.** Headline: Spearman 0.232 (mean, 5-fold x 5 repeats, n=172), a real but modest positive signal above the shuffled null. Product-facing figure: slate precision@5 is 0.571 against a 0.500 random baseline — a modest edge, and a proxy measured on held-out *corpus* titles, not a before/after measurement of the Task 6 display change (which touched only the app's sort/slice, not the prior, retrieval, or corpus — re-running the eval after that change returns identical numbers by construction). Full detail and caveats in `EVAL.md`.
 - **Niche selector** (deliverable 5, stretch) — `page.tsx` hardcodes `luxury-menswear` / `william_j_wade`.
 
 ## Why retrieval was broken (and what fixes it)

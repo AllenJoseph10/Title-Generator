@@ -16,7 +16,8 @@
     "import:dataset": "tsx --conditions=react-server scripts/import-dataset.ts",
     "refresh:metrics": "tsx scripts/refresh-metrics.ts",
     "collect:shares": "tsx scripts/collect-shares.ts",
-    "verify:retrieval": "tsx --conditions=react-server scripts/verify-retrieval.ts"
+    "verify:retrieval": "tsx --conditions=react-server scripts/verify-retrieval.ts",
+    "eval": "tsx scripts/eval.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",

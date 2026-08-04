@@ -3,6 +3,7 @@ import { db } from '@/lib/db/client';
 import { BUCKET } from '@/lib/storage/constants';
 import { SESSION_COOKIE, verifySession, sessionHash } from '@/lib/auth/passcode';
 import { runPipeline, PipelineError, type PipelineResult } from '@/lib/generation/orchestrator';
+import { displayTitles } from '@/lib/generation/constants';
 import type { ProviderId } from '@/lib/providers/types';
 
 export const runtime = 'nodejs';
@@ -55,7 +56,7 @@ export async function POST(req: NextRequest) {
   if (existing.data) {
     return NextResponse.json({
       id: existing.data.id,
-      titles: existing.data.generated_titles,
+      titles: displayTitles(existing.data.generated_titles as PipelineResult['titles']),
       visionDescription: existing.data.vision_description,
       storagePath: body.storage_path,
       costUsd: existing.data.cost_usd,
@@ -167,7 +168,7 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     id: attemptId,
-    titles: result.titles,
+    titles: displayTitles(result.titles),
     visionDescription: result.visionDescription,
     storagePath: body.storage_path,
     costUsd: result.costUsd,

@@ -21,6 +21,12 @@ import { computeTitlePrior } from '@/lib/retrieval/prior';
 const MAX_DURATION_SEC = 60;
 const TARGET_FRAMES = 8;
 
+// Re-exported for callers that already import from the orchestrator. The
+// definition (and the `displayTitles` read-path helper) lives in
+// ./constants so lightweight API routes can reach it without this module's
+// `server-only` + ffmpeg + provider-SDK graph.
+export { DISPLAY_COUNT } from './constants';
+
 export function selectVisionProvider(id: ProviderId): VisionProvider {
   switch (id) {
     case 'anthropic':
@@ -141,6 +147,11 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
       templateSimilarityPrior: 0.5,
     }));
   }
+
+  // Nothing downstream sorted these before, so the app's "ranked" titles were
+  // in model-emission order and the prior only painted a badge. Ordering here
+  // is what makes the prior load-bearing. Ties keep emission order.
+  titles.sort((a, b) => b.templateSimilarityPrior - a.templateSimilarityPrior);
 
   const durationMs = Math.round(performance.now() - t0);
   const costUsd = visionRes.costUsd + genRes.costUsd + priorEmbedCostUsd;

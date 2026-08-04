@@ -3,7 +3,7 @@ import type { HookFamily } from '@/lib/hooks/taxonomy';
 
 const FALLBACK_PRIOR = 0.5;
 const NEAREST_K = 5;
-const FAMILY_PRIOR_BLEND = 0.3; // 30% weight on family-level prior, 70% on neighbors.
+export const FAMILY_PRIOR_BLEND = 0.3; // 30% weight on family-level prior, 70% on neighbors.
 
 export type CorpusNeighbor = {
   hook_family: string;
@@ -28,6 +28,9 @@ export function computeTitlePrior(
   generatedEmbedding: number[],
   generatedFamily: HookFamily,
   neighbors: CorpusNeighbor[],
+  // Optional so the app's behaviour is untouched. The eval overrides it to
+  // isolate the neighbour signal (0) and to build the family-only baseline (1).
+  blend: number = FAMILY_PRIOR_BLEND,
 ): number {
   if (neighbors.length === 0) return FALLBACK_PRIOR;
 
@@ -50,7 +53,7 @@ export function computeTitlePrior(
     ? familyRates.reduce((s, n) => s + (n.performance_score ?? 0), 0) / familyRates.length
     : neighborMean;
 
-  const blended = (1 - FAMILY_PRIOR_BLEND) * neighborMean + FAMILY_PRIOR_BLEND * familyMean;
+  const blended = (1 - blend) * neighborMean + blend * familyMean;
   return clamp01(blended);
 }
 
