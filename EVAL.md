@@ -240,6 +240,26 @@ evidence the prior is doing something, not evidence it is doing it well.
 - Nothing here evaluates title *quality* — only whether the prior's ordering
   matches real performance.
 
+## Slate precision@5 as a proxy for the shipped 5-of-10 display
+
+Task 6 changed the app to generate 10 titles, sort them by
+`templateSimilarityPrior`, and display the best 5. This eval does not measure
+that change directly, and re-running it after Task 6 produces numerically
+identical output to before — the eval scores the prior against held-out
+**corpus** rows; Task 6 touched only the app's display ordering, not the
+prior, retrieval, or the corpus. There is no before/after here.
+
+What the numbers above legitimately support is a proxy, not a direct
+measurement: **slate precision@5** — rank 10 held-out *real corpus titles* by
+the prior, take the top 5, count how many were genuinely top-5 by ground
+truth — reads **0.571** against a **0.500** random-ranking baseline. That is
+evidence about the ranking signal (prior-based ordering edges out picking 5
+of 10 titles at random), not a measurement of the shipped feature, because it
+is measured on corpus titles the app already has ground truth for, not on
+titles the model generates at request time. The margin (0.571 vs. 0.500) is
+real but modest — call it a modest edge, not validation that the 5-of-10
+change works well in production.
+
 ## Flags
 
 | Flag | Default | Purpose |
