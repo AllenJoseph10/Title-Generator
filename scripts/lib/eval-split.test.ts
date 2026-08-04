@@ -71,10 +71,12 @@ describe('assignFolds', () => {
     }
   });
 
-  it('never splits a duplicated title across folds', () => {
-    // The group is the unit of assignment, so both rows of a duplicate title
-    // move together. Without this, a held-out row retrieves its own twin at
-    // similarity ~1.0 and scores perfectly for the wrong reason.
+  it('groups the two copies of a duplicated title into one unit of assignment', () => {
+    // The group is the unit of assignment: assignFolds returns one fold per group.
+    // Rows within a group cannot diverge by construction (it returns a single value
+    // per group, not per row). The no-split property is therefore structural and
+    // verified at the row-expansion point in the eval harness, not here.
+    // This test verifies the prerequisite: groupByTitle actually groups the duplicates.
     const groups = groupByTitle([
       { title: 'dupe', hook_family: 'a' },
       { title: 'DUPE', hook_family: 'a' },
@@ -82,23 +84,9 @@ describe('assignFolds', () => {
     ]);
     const dupeIdx = groups.findIndex((g) => g.key === 'dupe');
     expect(groups[dupeIdx].rows).toHaveLength(2);
+
     const folds = assignFolds(groups, 5, (g) => g.rows[0].hook_family, mulberry32(3));
-
-    // Verify folds array length to catch group-index misalignment
     expect(folds.length).toBe(groups.length);
-
-    // Expand group→fold to row→fold: map each row to its fold assignment
-    const rowToFold = new Map<{ title: string; hook_family: string }, number>();
-    groups.forEach((group, groupIdx) => {
-      group.rows.forEach((row) => {
-        rowToFold.set(row, folds[groupIdx]);
-      });
-    });
-
-    // Verify all rows of the duplicate title are in the same fold
-    const dupeRows = groups[dupeIdx].rows;
-    const dupleFolds = dupeRows.map((row) => rowToFold.get(row)!);
-    expect(dupleFolds[0]).toBe(dupleFolds[1]);
   });
 
   it('spreads a small stratum across folds instead of clustering it', () => {
