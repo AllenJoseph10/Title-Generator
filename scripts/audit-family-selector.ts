@@ -18,8 +18,11 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { classifyCandidates } from '../lib/hooks/classify';
-import { HOOK_FAMILIES, HOOK_TAXONOMY } from '../lib/hooks/taxonomy';
+import { classifyCandidates, familiesFromNeighbours } from '../lib/hooks/classify';
+import { HOOK_FAMILIES, HOOK_TAXONOMY, type HookFamily } from '../lib/hooks/taxonomy';
+import { cosineSimilarity, mmrRerank, type MmrCandidate } from '../lib/retrieval/mmr';
+import { RPC_LIMIT, FINAL_K, MMR_LAMBDA } from '../lib/retrieval/constants';
+import { loadEnvLocal } from './lib/load-env';
 
 type Fields = { scene: string; subject: string; setting: string; vibe: string[]; visualHook: string };
 type Item = { permalink?: string; descriptionFields?: Fields; burnedInTitle?: string };
@@ -123,6 +126,109 @@ function main() {
     console.log(`  "${m.title.slice(0, 58)}"`);
     console.log(`     truth: ${m.truth}   forced: ${m.got.join(', ')}`);
   }
+
+  return { hitRate, avgReturned, randomBar };
 }
 
-main();
+// ---------------------------------------------------------------- leave-one-out
+//
+// The replacement derives required families from the videos retrieval actually
+// found similar, so it can only be measured by running retrieval. Leave-one-out
+// over the corpus does that honestly: hide each row, retrieve its 8 nearest
+// neighbours through the real funnel, derive families, and check whether the
+// hidden row's true family came through.
+//
+// Zero API cost — every embedding is already in the database.
+
+type CorpusRow = {
+  id: string;
+  source_url: string;
+  hook_family: string;
+  embedding: number[] | string;
+  description_embedding: number[] | string | null;
+};
+
+const vec = (v: number[] | string): number[] => (typeof v === 'string' ? JSON.parse(v) : v);
+
+async function leaveOneOut(baseline: { hitRate: number; avgReturned: number }) {
+  loadEnvLocal();
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    console.log('\n(skipping leave-one-out: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set)');
+    return;
+  }
+  const headers = { apikey: key, authorization: `Bearer ${key}` };
+
+  const rows: CorpusRow[] = [];
+  for (let off = 0; ; off += 25) {
+    const res = await fetch(
+      `${url}/rest/v1/corpus_titles?select=id,source_url,hook_family,embedding,description_embedding&order=id&offset=${off}&limit=25`,
+      { headers },
+    );
+    const page = (await res.json()) as CorpusRow[];
+    if (!page.length) break;
+    rows.push(...page);
+    if (page.length < 25) break;
+  }
+
+  const usable = rows.filter((r) => r.description_embedding);
+  let hits = 0;
+  let returned = 0;
+  const perFamily = new Map<string, { n: number; hit: number }>();
+
+  for (const target of usable) {
+    const others = usable.filter((r) => r.id !== target.id);
+    const scored = others
+      .map((r) => ({ row: r, sim: cosineSimilarity(vec(target.description_embedding!), vec(r.description_embedding!)) }))
+      .sort((a, b) => b.sim - a.sim);
+
+    const candidates: MmrCandidate<CorpusRow>[] = scored.slice(0, RPC_LIMIT).map((s) => ({
+      item: s.row,
+      relevance: s.sim,
+      embedding: vec(s.row.embedding),
+    }));
+    const neighbours = mmrRerank(candidates, FINAL_K, MMR_LAMBDA).map((c) => ({
+      hookFamily: c.item.hook_family as HookFamily,
+    }));
+
+    const picked = familiesFromNeighbours(neighbours);
+    returned += picked.length;
+    const hit = picked.includes(target.hook_family as HookFamily);
+    if (hit) hits++;
+
+    const e = perFamily.get(target.hook_family) ?? { n: 0, hit: 0 };
+    e.n++;
+    if (hit) e.hit++;
+    perFamily.set(target.hook_family, e);
+  }
+
+  const n = usable.length;
+  const hitRate = hits / n;
+  const avgReturned = returned / n;
+  const randomBar = avgReturned / HOOK_FAMILIES.length;
+
+  console.log('\n\n================ REPLACEMENT: familiesFromNeighbours ================');
+  console.log(`leave-one-out over ${n} rows, real funnel (top-${RPC_LIMIT} -> MMR(${FINAL_K}, ${MMR_LAMBDA}))\n`);
+  console.log(`hit rate            : ${(hitRate * 100).toFixed(1)}%  (${hits}/${n})`);
+  console.log(`avg families forced : ${avgReturned.toFixed(2)} of ${HOOK_FAMILIES.length}`);
+  console.log(`random baseline     : ${(randomBar * 100).toFixed(1)}%  (picking that many at random)`);
+  console.log(`lift over random    : ${((hitRate - randomBar) * 100).toFixed(1)} points`);
+
+  console.log('\n=== hit rate by true family ===');
+  for (const [fam, e] of [...perFamily.entries()].sort((a, b) => b[1].n - a[1].n)) {
+    console.log(`  ${fam.padEnd(24)}n=${String(e.n).padEnd(5)}${((e.hit / e.n) * 100).toFixed(0)}%`);
+  }
+
+  console.log('\n=== head to head ===');
+  console.log(`  keyword selector : ${(baseline.hitRate * 100).toFixed(1)}% hit, ${baseline.avgReturned.toFixed(2)} families forced`);
+  console.log(`  from neighbours  : ${(hitRate * 100).toFixed(1)}% hit, ${avgReturned.toFixed(2)} families forced`);
+  console.log(
+    `  change           : ${((hitRate - baseline.hitRate) * 100 >= 0 ? '+' : '')}${((hitRate - baseline.hitRate) * 100).toFixed(1)} points`,
+  );
+}
+
+(async () => {
+  const baseline = main();
+  await leaveOneOut(baseline);
+})();
