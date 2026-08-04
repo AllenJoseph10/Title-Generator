@@ -4,6 +4,8 @@ import { useCallback, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Upload } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { rejectUpload } from '@/lib/storage/constants';
+import { toast } from '@/components/ui/toaster';
 
 type Props = {
   onFile: (file: File) => void;
@@ -14,14 +16,29 @@ export function UploadDropzone({ onFile, busy }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Reject here rather than letting /api/upload-url do it. The server check
+  // stays as the real gate — this one exists so the user is told immediately,
+  // in a message that names the limit, instead of after a round trip.
+  const accept = useCallback(
+    (f: File) => {
+      const problem = rejectUpload(f.size, f.type);
+      if (problem) {
+        toast.error(problem);
+        return;
+      }
+      onFile(f);
+    },
+    [onFile],
+  );
+
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragOver(false);
       const f = e.dataTransfer.files?.[0];
-      if (f) onFile(f);
+      if (f) accept(f);
     },
-    [onFile],
+    [accept],
   );
 
   return (
@@ -51,8 +68,12 @@ export function UploadDropzone({ onFile, busy }: Props) {
         <p className="font-display text-2xl text-ink">Drop a silent clip</p>
         <p className="font-display text-2xl text-ink-dim italic">to generate titles</p>
       </div>
+      {/* "up to 60s" alone was misleading: 4K/60 phone footage runs ~48 Mbps
+          and hits the 50 mb cap in about 8 seconds, so the size limit binds
+          long before the duration one. Naming the resolution makes the pair
+          reachable rather than aspirational. */}
       <p className="text-micro uppercase tracking-[0.12em] text-ink-muted">
-        mp4 or mov · up to 60s · ≤ 50 mb
+        mp4 or mov · ≤ 50 mb · up to 60s at 1080p
       </p>
       <input
         ref={inputRef}
@@ -62,7 +83,9 @@ export function UploadDropzone({ onFile, busy }: Props) {
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0];
-          if (f) onFile(f);
+          if (f) accept(f);
+          // Clear it, so re-picking the same file after a rejection still fires.
+          e.target.value = '';
         }}
       />
     </motion.div>
