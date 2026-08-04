@@ -21,6 +21,11 @@ import { computeTitlePrior } from '@/lib/retrieval/prior';
 const MAX_DURATION_SEC = 60;
 const TARGET_FRAMES = 8;
 
+// Generation still emits 10 candidates; the best DISPLAY_COUNT are shown.
+// The rest are persisted, not discarded — they are the only record of real
+// generations with real priors attached, which is future eval data.
+export const DISPLAY_COUNT = 5;
+
 export function selectVisionProvider(id: ProviderId): VisionProvider {
   switch (id) {
     case 'anthropic':
@@ -141,6 +146,11 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
       templateSimilarityPrior: 0.5,
     }));
   }
+
+  // Nothing downstream sorted these before, so the app's "ranked" titles were
+  // in model-emission order and the prior only painted a badge. Ordering here
+  // is what makes the prior load-bearing. Ties keep emission order.
+  titles.sort((a, b) => b.templateSimilarityPrior - a.templateSimilarityPrior);
 
   const durationMs = Math.round(performance.now() - t0);
   const costUsd = visionRes.costUsd + genRes.costUsd + priorEmbedCostUsd;

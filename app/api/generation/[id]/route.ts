@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db/client';
 import { BUCKET } from '@/lib/storage/constants';
 import { SESSION_COOKIE, verifySession } from '@/lib/auth/passcode';
+import { DISPLAY_COUNT } from '@/lib/generation/orchestrator';
+import type { GeneratedTitle } from '@/lib/providers/types';
 
 export const runtime = 'nodejs';
 
@@ -39,7 +41,7 @@ export async function GET(
 
   return NextResponse.json({
     id: r.data.id,
-    titles: r.data.generated_titles,
+    titles: (r.data.generated_titles as GeneratedTitle[]).slice(0, DISPLAY_COUNT),
     visionDescription: r.data.vision_description,
     storagePath,
     signedUrl,
