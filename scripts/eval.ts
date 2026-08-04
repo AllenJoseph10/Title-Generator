@@ -173,9 +173,27 @@ type Prediction = {
   // neighbour term for that row. See `familyFallback` below.
   familyTermOnly: number;
   // Genuine retrieval-free baseline: mean ground truth of the row's hook
-  // family over the fold's TRAINING set — one value per family, no MMR, no
-  // per-row retrieval dependence.
+  // family over the fold's TRAINING set (out-of-fold, excludes this row) —
+  // one value per family, no MMR, no per-row retrieval dependence.
+  //
+  // WARNING ON INTERPRETING THE SIGN: an out-of-fold group mean is
+  // negatively biased under the null by construction, independent of
+  // whether hook family carries any real effect. For a held-out row in
+  // family F, Cov(prediction, actual) = B - sum_F w_F * sigma_F^2/(N_F-1),
+  // where B is between-family variance and sigma_F^2 is within-family
+  // variance; under "no real family effect" E[B] is smaller than the
+  // penalty term by construction, leaving Cov < 0 always, regardless of
+  // fold size. So a negative value here is NOT evidence that hook family is
+  // anti-predictive — only the comparison to the headline (computed the
+  // same, out-of-fold, way) is apples-to-apples. `familyMeanAll` below is
+  // the same estimator without the bias, printed for reference only.
   familyMeanTrain: number;
+  // Reference only, NOT used for the headline comparison: the same family
+  // mean computed IN-SAMPLE, over every eligible row including the row
+  // being scored. This has no leave-one-out penalty, so it is not biased
+  // negative the way `familyMeanTrain` is — it exists purely to make that
+  // bias visible by showing what the same estimator reads without it.
+  familyMeanAll: number;
   // True when computeTitlePrior's family term had no same-family neighbour
   // to average (prior.ts:51-54), so it fell back to the neighbour mean and
   // `familyTermOnly` above equals the neighbour term rather than measuring
@@ -212,6 +230,12 @@ function runRepeat(rows: Row[], gt: GroundTruth, opts: Options, seed: number): P
   const groups = groupByTitle(eligible);
   const folds = assignFolds(groups, FOLDS, (g: TitleGroup<Row>) => g.rows[0].hook_family, mulberry32(seed));
 
+  // In-sample reference: same estimator as familyMeanTrain, but computed
+  // over every eligible row (no fold held out). Identical across every fold
+  // and every row in this repeat, so it is computed once here rather than
+  // per fold.
+  const familyMeansAll = familyMeansFromTrain(eligible, gt);
+
   const out: Prediction[] = [];
   for (let f = 0; f < FOLDS; f++) {
     const testRows = rowsInFold(groups, folds, f);
@@ -233,6 +257,7 @@ function runRepeat(rows: Row[], gt: GroundTruth, opts: Options, seed: number): P
         predicted: computeTitlePrior(row.titleVec, family, neighbors, opts.blend),
         familyTermOnly: computeTitlePrior(row.titleVec, family, neighbors, 1),
         familyMeanTrain: familyMeansTrain.get(row.hook_family) ?? NEUTRAL_PRIOR,
+        familyMeanAll: familyMeansAll.get(row.hook_family) ?? NEUTRAL_PRIOR,
         familyFallback,
         actual: row[gt] as number,
       });
@@ -308,6 +333,19 @@ async function main(): Promise<void> {
     //    over several distinct, fixed rotation offsets divides that noise by
     //    roughly sqrt(offsets), the same variance-reduction the permutation
     //    null gets from its 1000 draws, while staying fully deterministic.
+    //
+    //    The pass/fail threshold is anchored to the null's own scale, NOT to
+    //    a fraction of the real headline. A relative threshold (e.g. "under
+    //    half of real") couples "the harness is wired correctly" to "the
+    //    predictor currently has strong signal" — reachable regimes like
+    //    --family-blend 0 or --ground-truth view_outlier_score can weaken the
+    //    real headline toward the null's own magnitude, at which point a
+    //    relative bound either passes by luck or fails deterministically
+    //    while blaming pairing. 3/sqrt(n) is a generous multiple of the
+    //    ~1/sqrt(n) scale Spearman's rho has under independence (n here is
+    //    out-of-fold predictions, same quantity as the headline's sampling
+    //    SE above) — comfortably above ordinary null noise, but requires a
+    //    real collapse regardless of how strong or weak the headline is.
     const predicted = preds.map((p) => p.predicted);
     const actual = preds.map((p) => p.actual);
     const real = spearman(predicted, actual);
@@ -318,14 +356,14 @@ async function main(): Promise<void> {
       return Math.abs(s ?? 0);
     });
     const brokenMag = rotatedMags.reduce((a, b) => a + b, 0) / rotatedMags.length;
+    const threshold = 3 / Math.sqrt(preds.length);
     console.log(`sanity 2/2: real headline ${fmt(real, 6)} vs mean |rotated-pairing headline| ` +
       `${brokenMag.toFixed(6)} over ${offsets.length} fixed rotation offsets ` +
-      '(rotated must collapse toward 0, well below the real value)');
-    const realMag = Math.abs(real ?? 0);
-    if (real === null || !(brokenMag < realMag * 0.5)) {
+      `(must collapse below ${threshold.toFixed(6)} = 3/sqrt(n), independent of headline strength)`);
+    if (real === null || !(brokenMag < threshold)) {
       throw new Error(
         `sanity 2/2 FAILED: mean rotated-pairing magnitude (${brokenMag.toFixed(6)}) did not collapse ` +
-        `relative to the real headline (${fmt(real, 6)}) — the correlation may not depend on alignment`,
+        `below the null threshold (${threshold.toFixed(6)}) — the correlation may not depend on alignment`,
       );
     }
 
@@ -337,6 +375,7 @@ async function main(): Promise<void> {
   const shuffledBase: number[] = [];
   const familyTermBase: number[] = [];
   const familyMeanBase: number[] = [];
+  const familyMeanAllBase: number[] = [];
   const p3: number[] = [];
   const p5: number[] = [];
   const perFamily = new Map<string, { pred: number[]; act: number[] }>();
@@ -361,6 +400,9 @@ async function main(): Promise<void> {
 
     const fm = spearman(preds.map((p) => p.familyMeanTrain), actual);
     if (fm !== null) familyMeanBase.push(fm);
+
+    const fma = spearman(preds.map((p) => p.familyMeanAll), actual);
+    if (fma !== null) familyMeanAllBase.push(fma);
 
     // Permutation null: shuffle predictions against fixed actuals, same
     // distribution, no signal. NULL_DRAWS_PER_REPEAT draws per repeat
@@ -395,6 +437,7 @@ async function main(): Promise<void> {
   const sb = meanSd(shuffledBase);
   const ft = meanSd(familyTermBase);
   const fm = meanSd(familyMeanBase);
+  const fma = meanSd(familyMeanAllBase);
   // Analytic SE of Spearman's rho under independence, ~1/sqrt(n-1). This is
   // the dominant source of uncertainty in the headline — roughly 3x h.sd,
   // which only measures sensitivity to fold partition over the SAME 172 rows.
@@ -405,10 +448,17 @@ async function main(): Promise<void> {
     `${fmt(h.mean)} (fold-assignment spread ${fmt(h.sd)} across ${opts.repeats} seeds)`);
   console.log(`  sampling SE (n=${sampleN})   ~${samplingSE.toFixed(3)}  ` +
     '(analytic, 1/sqrt(n-1) — the dominant uncertainty, not the spread above)');
-  console.log('  baseline: shuffled (1000 draws)          ' + `${fmt(sb.mean)} +/- ${fmt(sb.sd)}`);
+  console.log(`  baseline: shuffled (${shuffledBase.length} draws)`.padEnd(42) + `${fmt(sb.mean)} +/- ${fmt(sb.sd)}`);
   console.log('  baseline: family term only (blend=1)     ' + `${fmt(ft.mean)} +/- ${fmt(ft.sd)}`);
-  console.log('  baseline: family mean (train)            ' + `${fmt(fm.mean)} +/- ${fmt(fm.sd)}`);
+  console.log('  baseline: family mean (train, out-of-fold)  ' + `${fmt(fm.mean)} +/- ${fmt(fm.sd)}`);
+  console.log('  baseline: family mean (in-sample, reference) ' + `${fmt(fma.mean)} +/- ${fmt(fma.sd)}`);
   console.log('  baseline: constant 0.5                     ' + `${fmt(constant)}   (undefined by construction)`);
+  console.log('\n  note: the out-of-fold family-mean baseline above is negatively biased under the null ' +
+    'by construction (a leave-fold-out group mean loses variance regardless of whether hook family ' +
+    'has any real effect) — only its comparison to the headline is meaningful, not its sign. The ' +
+    'in-sample figure is the same estimator without that bias, shown for reference: its positive ' +
+    'value is what confirms the out-of-fold negative is the expected leave-out penalty, not a real ' +
+    'anti-correlation.');
 
   console.log(`\nfamily term fallback: ${(fallbackFrac * 100).toFixed(1)}% of predictions ` +
     '(no same-family neighbour retrieved; family term only == neighbour term for these rows)');
