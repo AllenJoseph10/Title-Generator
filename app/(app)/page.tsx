@@ -252,7 +252,7 @@ export default function Page() {
                 <GeneratingState />
               ) : (
                 <div className="flex h-full items-center justify-center text-ink-muted text-sm italic min-h-[300px]">
-                  Press Generate to see 10 ranked titles
+                  Press Generate to see 5 ranked titles
                 </div>
               )}
             </div>
