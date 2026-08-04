@@ -71,10 +71,9 @@ noise and what naive alternatives score:
   under it:
 - **`permuted-family null` (1000 draws)** — the measured null for the baseline
   above. Reshuffles which row carries which `hook_family` label and reruns
-  that identical estimator, so it captures the leave-out construction penalty
-  *and* the taxonomy's chance-level between-family variance together. Whether
-  the observed baseline lands inside or outside this null is printed on the
-  same line, in SDs.
+  that identical estimator, so it measures how this baseline behaves when
+  `hook_family` carries no signal at all. Whether the observed baseline lands
+  inside or outside this null is printed on the same line, in SDs.
 - **`family mean (in-sample, reference)`** — the same estimator, but computed
   over every eligible row including the one being scored (no leave-out).
   Printed only so the gap against the out-of-fold figure is visible; it is
@@ -99,12 +98,19 @@ covariance penalty into a larger-looking correlation. Derivation in
 `scripts/eval.ts`, on `Prediction.familyMeanTrain`.
 
 The eval does not stop at that derivation, because it accounts for only
-≈ −0.034 of the ≈ −0.101 observed. The **permuted-family null** (1000 draws)
+≈ −0.034 of the ≈ −0.101 observed. The remainder is **not** explained by
+between-family variance: that term enters the covariance with a positive
+sign, so it cannot push the figure further negative. It is additional
+construction the simple derivation under-counts — the estimator holds out an
+entire *fold*, not a single row, so every training mean is displaced away
+from the actuals of the fold it is then scored against.
+
+The **permuted-family null** (1000 draws) settles it empirically. It
 reshuffles which row carries which `hook_family` label — fold partition,
 ground truth and estimator all held fixed — and reruns the identical
 baseline. It reads **−0.076 ± 0.107**, and the observed −0.101 sits **0.23 SD
-inside it**. The negative sign is therefore construction plus chance-level
-between-family variance, measured rather than assumed. (It equally does not
+inside it**. The negative sign is therefore construction, measured rather
+than assumed. (It equally does not
 show hook family *has* signal: a null that wide could not detect a modest
 effect on 172 rows.) `family mean (in-sample, reference)` (≈ +0.122) is the
 same estimator with the opposite-signed bias — each row contributes to the

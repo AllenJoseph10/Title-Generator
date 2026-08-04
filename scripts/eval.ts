@@ -314,17 +314,20 @@ function runRepeat(rows: Row[], gt: GroundTruth, opts: Options, seed: number): P
 //
 // The construction penalty derived on Prediction.familyMeanTrain accounts for
 // roughly -0.034 of correlation. The observed baseline is several times more
-// negative than that, and closing the gap requires an assumption about the
-// realized between-family variance — a substantive empirical claim about the
-// taxonomy, not an artefact. So measure it instead of asserting it.
+// negative than that. The gap is NOT realized between-family variance: that
+// term enters the covariance with a positive sign and so cannot make the
+// figure more negative. It is construction the simple derivation under-counts
+// — this estimator holds out a whole FOLD, not one row, so every training
+// mean is displaced away from the actuals it is scored against. Rather than
+// argue about how much that accounts for, measure the null directly.
 //
 // The null shuffles WHICH ROW CARRIES WHICH hook_family label and recomputes
 // the identical estimator. Everything else is held fixed: the same fold
 // partition (which stays keyed on the real labels, because that is the
 // partition the real baseline was measured on), the same ground truth, the
-// same leave-fold-out arithmetic. What is left is the construction penalty
-// plus the taxonomy's chance-level between-family variance — exactly the
-// quantity the observed -0.101 needs to be compared against.
+// same leave-fold-out arithmetic. What is left is the estimator's behaviour
+// when hook_family carries no signal — exactly the quantity the observed
+// -0.101 needs to be compared against.
 //
 // No retrieval is involved, so this costs milliseconds.
 function familyLabelNull(
@@ -600,8 +603,9 @@ async function main(): Promise<void> {
   const fln = meanSd(familyLabelNullDraws);
   // How far the observed out-of-fold family-mean baseline sits from its own
   // measured null, in that null's SDs. Inside ~2 SD means the value is fully
-  // explained by construction plus chance-level between-family variance;
-  // outside means hook family is measurably anti-predictive out-of-fold.
+  // explained by how this estimator behaves when hook_family carries no
+  // signal; outside means hook family is measurably anti-predictive
+  // out-of-fold.
   const flZ = fln.sd > 0 ? (fm.mean - fln.mean) / fln.sd : 0;
   const flInside = Math.abs(flZ) <= 2;
   // Analytic SE of Spearman's rho under independence, ~1/sqrt(n-1). This is
