@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mulberry32, normalizeTitleKey, groupByTitle, assignFolds } from './eval-split';
+import { mulberry32, normalizeTitleKey, groupByTitle, assignFolds, rowsInFold } from './eval-split';
 
 type Row = { title: string; hook_family: string };
 
@@ -114,5 +114,78 @@ describe('assignFolds', () => {
       .toEqual(assignFolds(groups, 5, strat, mulberry32(9)));
     expect(assignFolds(groups, 5, strat, mulberry32(9)))
       .not.toEqual(assignFolds(groups, 5, strat, mulberry32(10)));
+  });
+});
+
+describe('rowsInFold', () => {
+  const many = (n: number, family: string): Row[] =>
+    Array.from({ length: n }, (_, i) => ({ title: `${family}-${i}`, hook_family: family }));
+
+  it('throws when groups and folds are misaligned', () => {
+    const groups = groupByTitle(many(3, 'a'));
+    expect(() => rowsInFold(groups, [0, 1], 0)).toThrow(/mismatch/);
+  });
+
+  it('returns exactly the rows of groups assigned to that fold', () => {
+    const groups = groupByTitle(many(20, 'a'));
+    const folds = assignFolds(groups, 5, () => 'a', mulberry32(1));
+    const fold0 = rowsInFold(groups, folds, 0);
+    const expectedTitles = groups.filter((_, i) => folds[i] === 0).flatMap((g) => g.rows.map((r) => r.title));
+    expect(fold0.map((r) => r.title).sort()).toEqual(expectedTitles.sort());
+  });
+
+  // A hand-written stand-in for "these two rows are the same real title",
+  // independent of the imported normalizeTitleKey. Using the module's own
+  // function as the leak oracle would make this test tautological: if
+  // normalizeTitleKey regressed (e.g. stopped lowercasing), grouping AND the
+  // check would agree with each other using the same broken definition, and
+  // the test would pass despite the corpus's two known duplicates ending up
+  // split across test and train. (Verified empirically: reusing the imported
+  // function here lets a lowercasing regression slip through silently.) A
+  // reference oracle written separately doesn't share the bug, so it exposes
+  // exactly the leak the imported function's regression would cause.
+  const referenceKey = (title: string): string => title.trim().toLowerCase().replace(/\s+/g, ' ');
+
+  // The property under test: a held-out row must never be able to retrieve
+  // its own twin from the training set of the SAME fold. assignFolds groups
+  // duplicate titles so they move together, but that guarantee only becomes
+  // checkable once groups are expanded into rows — which is what rowsInFold
+  // does and what runRepeat actually consumes. Testing assignFolds alone
+  // cannot express this: it returns one fold index per group, so row-level
+  // divergence within a group is structurally impossible to represent there.
+  //
+  // Falsifiability: if normalizeTitleKey stopped lowercasing, 'Same Title'
+  // and 'SAME TITLE' would hash to two different keys, groupByTitle would
+  // split them into two groups, and assignFolds could then legally place
+  // those two groups in different folds — at which point one fold's test
+  // set would contain a title whose exact duplicate (by the reference
+  // oracle above) sits in that fold's own training set, and the assertion
+  // below would fail. Confirmed by actually mutating normalizeTitleKey to
+  // drop .toLowerCase(): this test fails at seed 1 (the two rows land in
+  // folds 0 and 4), while sweeping seeds guards against a single unlucky
+  // seed keeping the split groups coincidentally together.
+  it('never leaves a test row\'s twin in that fold\'s own training set', () => {
+    const dup: Row[] = [
+      { title: 'Same Title', hook_family: 'a' },
+      { title: '  SAME  TITLE ', hook_family: 'a' },
+    ];
+    const groups = groupByTitle([...dup, ...many(20, 'a'), ...many(15, 'b')]);
+
+    for (let seed = 0; seed < 20; seed++) {
+      const folds = assignFolds(groups, 5, (g) => g.rows[0].hook_family, mulberry32(seed));
+      expect(groups.length).toBe(folds.length);
+
+      for (let f = 0; f < 5; f++) {
+        const testRows = rowsInFold(groups, folds, f);
+        const trainRows = groups
+          .filter((_, i) => folds[i] !== f)
+          .flatMap((g) => g.rows);
+        const trainKeys = new Set(trainRows.map((r) => referenceKey(r.title)));
+
+        for (const row of testRows) {
+          expect(trainKeys.has(referenceKey(row.title))).toBe(false);
+        }
+      }
+    }
   });
 });

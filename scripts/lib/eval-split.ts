@@ -77,3 +77,18 @@ export function assignFolds<T>(
   }
   return assignment;
 }
+
+// Expands the group-level fold assignment into the rows belonging to one
+// fold. This is the row-expansion point: the "a group never splits across
+// folds" property is only checkable here, since assignFolds itself returns
+// one fold index per group and cannot express row-level divergence at all.
+export function rowsInFold<T>(groups: TitleGroup<T>[], folds: number[], foldIndex: number): T[] {
+  if (groups.length !== folds.length) {
+    throw new Error(`rowsInFold: groups (${groups.length}) and folds (${folds.length}) length mismatch`);
+  }
+  const out: T[] = [];
+  groups.forEach((g, i) => {
+    if (folds[i] === foldIndex) out.push(...g.rows);
+  });
+  return out;
+}
