@@ -39,6 +39,22 @@ export function buildCreatorBlock(args: { styleBrief: string; styleFingerprint: 
   return `## Niche style brief\n${args.styleBrief}\n\n${fingerprint}`;
 }
 
+// Render a percentile rank as a band the model can order by.
+//
+// `performanceScore` is a percentile RANK across the corpus, so 0.88 means the
+// row beat 88% of it — the top 12%. Clamped at 1% so the single best row does
+// not render as "top 0%", which reads as an error rather than a superlative.
+//
+// A null score is stated as unmeasured rather than defaulted. Three corpus
+// rows genuinely have no share reading, and rendering those as "top 100%"
+// would tell the model they were the worst performers — a claim the data does
+// not make. Same reasoning as treating a null performance_score as unscored
+// rather than zero throughout the importer and prior.
+export function performanceBand(score: number | null): string {
+  if (score === null) return 'unmeasured';
+  return `top ${Math.max(1, Math.round((1 - score) * 100))}%`;
+}
+
 export function buildUserMessage(args: {
   description: VisionDescription;
   retrievedExamples: CorpusTitle[];
@@ -46,7 +62,7 @@ export function buildUserMessage(args: {
 }): string {
   const examples = args.retrievedExamples.length
     ? args.retrievedExamples
-        .map((e) => `- [${e.hookFamily}] ${e.title}`)
+        .map((e) => `- [${e.hookFamily}, ${performanceBand(e.performanceScore)}] ${e.title}`)
         .join('\n')
     : '(no retrieved examples — generate from taxonomy templates and creator voice)';
 
@@ -57,7 +73,8 @@ export function buildUserMessage(args: {
 - vibe: ${args.description.vibe.join(', ')}
 - visual hook: ${args.description.visualHook}
 
-## Retrieved high-performing examples (mimic patterns, do not copy)
+## Titles from visually similar videos (mimic patterns, do not copy)
+Each is tagged with its hook family and how it ranked on share rate across the corpus. A smaller "top N%" performed better. Weight the better-performing patterns more heavily, and treat the weaker ones as showing what did NOT land for a video like this. "unmeasured" means no share data exists for that row — draw no conclusion from it either way.
 ${examples}
 Do not carry a specific quantity, price, brand, or proper noun from a retrieved example into a new title unless the video description above actually supports it. You are free to invent your own number when the video genuinely shows a countable set.
 
