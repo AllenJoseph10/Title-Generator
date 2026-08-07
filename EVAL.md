@@ -210,6 +210,90 @@ is a measurement, not a gate.
 
 ## Current numbers
 
+Run 2026-08-07, seed 20260804, **251-row corpus** (175 original + 76 from the
+under-performer backfill).
+
+```
+
+eval — 245 of 251 rows scoreable, 5-fold x 5 repeats, seed 20260804
+ground truth: performance_score        funnel: top-30 -> MMR(8, lambda=0.6)
+family blend: 0
+
+Spearman (headline)      0.304 (fold-assignment spread 0.034 across 5 seeds)
+  sampling SE (n=245)   ~0.064
+  baseline: shuffled (1000 draws)          0.000 +/- 0.064
+  baseline: family term only (blend=1)     0.138 +/- 0.044
+  baseline: family mean (train, out-of-fold)  -0.194 +/- 0.081
+    permuted-family null (1000 draws)        -0.042 +/- 0.088   (observed is -1.73 SD from it — INSIDE the null)
+  baseline: family mean (in-sample, reference) 0.046 +/- 0.000
+
+family term fallback: 10.4% of predictions
+
+slate precision (10 candidates, 200 slates x 5 repeats)
+  @3   0.421 +/- 0.022   (random 0.300; shuffled null 0.301 +/- 0.227 per slate)
+  @5   0.594 +/- 0.020   (random 0.500; shuffled null 0.498 +/- 0.173 per slate)
+
+by hook family
+  transformation_tease    n=75    0.221
+  setup_trivial_reveal    n=63    0.277
+  relatable_pov           n=47    0.300
+  reaction_humblebrag     n=44    0.428
+  listicle_reveal         n=16    0.540
+```
+
+### This is NOT a clean before/after against the 0.259 run
+
+The headline moved 0.259 -> 0.304 and the sampling SE fell 0.076 -> 0.064, but
+**the two numbers are not measurements of the same thing**, and the difference
+must not be read as "the prior improved by 0.045":
+
+- **The ground truth itself changed.** `performance_score` is a percentile rank
+  over the corpus. Adding 76 rows re-ranked every existing row, so the target
+  being predicted is a different variable, not a more precisely measured one.
+- **The share-rate denominator changed.** `merge-dataset` now divides shares by
+  the view count fetched in the *same* SocialCrawl call rather than the stored
+  Apify figure. Existing rows move by <0.1%, but it is still a definitional
+  change to the metric.
+- **The gain sits inside the sampling SE.** +0.045 against an SE of ~0.064 is
+  not a distinguishable improvement on its own.
+
+What the run does support: the signal **held and did not degrade** when the
+corpus was widened from winners-only to a population spanning the real
+performance range, measured with a tighter error bar. That is the outcome that
+would have been most in doubt — a large fall would have suggested the original
+0.259 was partly an artifact of winners-only structure. It was not.
+
+One unambiguous gain: `listicle_reveal` clears the n=10 floor for the first
+time (n=16, 0.540), so all five families now report.
+
+### What the backfill established about reach vs. titles
+
+The backfill was selected on a **views floor only**, with no filter on
+performance, specifically so it could answer whether low view counts indicate
+weak titles or just lost reach lotteries. Two results, and they are not in
+tension:
+
+1. **The backfill rows scatter across the whole percentile range** — median
+   0.475 against the originals' 0.537, with heavy overlap, and only 22 of 73
+   landing below 0.35. Videos that lost on reach are *not* concentrated at the
+   bottom on share rate.
+
+2. **But reach and share rate are substantially correlated**:
+   `Spearman(view_outlier, share_rate) = 0.436` (n=245, SE ~0.064), holding
+   within creator too (mean 0.433 across the 9 creators with n>=10). Note the
+   sign of the artifact: the two metrics share `views` in opposite positions,
+   which induces a *spurious negative* correlation, so the true relationship is
+   more positive than 0.436.
+
+Together: reach is neither pure luck nor a clean quality signal — about 19% of
+rank variance is shared. **This corrects an earlier claim in this project that
+`share_rate` "conditions on reach" and is therefore immune to the distribution
+lottery. It is not immune.** The original 3x view gate was consequently not
+selecting purely on noise, which means the pre-backfill corpus was genuinely
+range-restricted on the outcome, and widening it was worth doing.
+
+### Prior numbers, for reference
+
 Run 2026-08-04, seed 20260804, 175-row corpus:
 
 ```
