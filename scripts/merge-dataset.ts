@@ -4,6 +4,7 @@
 // Only `included` rows are emitted. Everything else stays in the manifests
 // with its reason, so nothing is lost and any exclusion can be re-audited.
 
+import { shareRateOf } from './lib/share-rate';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { loadManifest } from './lib/manifest';
@@ -68,11 +69,12 @@ async function main() {
     );
     const included = entries.filter((e) => e.status === 'included' && e.burnedInTitle);
     for (const e of included) {
-      const shares = e.socialcrawl?.shares;
       collected.push({
         handle,
         e,
-        shareRate: typeof shares === 'number' && e.views ? shares / e.views : null,
+        // Denominator comes from the same call as the shares wherever possible;
+        // see scripts/lib/share-rate.ts for why that matters to the backfill.
+        shareRate: shareRateOf(e),
         viewOutlier: e.views && baseline > 0 ? e.views / baseline : null,
       });
     }
