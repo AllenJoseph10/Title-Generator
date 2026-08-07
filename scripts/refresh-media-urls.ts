@@ -34,6 +34,7 @@ import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import { loadEnvLocal, requireEnv } from './lib/load-env';
 import { loadManifest, saveManifest, type ManifestEntry } from './lib/manifest';
+import { selectRejects, type RejectCandidate, type SelectionCriteria } from './lib/reject-sampler';
 
 const CREDITS_PER_CALL = 5;
 const CREDIT_FLOOR = 100;
@@ -45,9 +46,25 @@ const MIN_MULTIPLIER = 3; // the selection gate these rows must now clear
 // See docs/SESSION-HANDOFF.md OPEN ITEMS.
 const SKIP_HANDLES = new Set(['henryjwade']);
 
-type Target = { handle: string; shortcode: string; multiplier: number | null };
+type Target = { handle: string; shortcode: string; multiplier: number | null; views: number | null };
 
-type Args = { apply: boolean; download: boolean; admit: boolean; limit: number; statuses: string[] };
+type Args = {
+  apply: boolean;
+  download: boolean;
+  admit: boolean;
+  limit: number;
+  statuses: string[];
+  // Backfill mode: sample NORMAL-performing videos (below the 3x gate) to give
+  // the corpus a real performance range. Inverts the default selection, so it
+  // is an explicit opt-in rather than a tuning knob on the rescue path.
+  backfill: boolean;
+  minViews: number;
+  maxMultiplier: number;
+  total: number;
+  perCreatorCap: number;
+  capOverrides: Record<string, number>;
+  seed: number;
+};
 
 function parseArgs(argv: string[]): Args {
   const a: Args = {
@@ -56,6 +73,15 @@ function parseArgs(argv: string[]): Args {
     admit: false,
     limit: Infinity,
     statuses: ['excluded_low_views', 'excluded_rank'],
+    backfill: false,
+    // Below ~20k views a share rate is measured on too few shares to be worth
+    // paying to OCR — see the derivation in lib/reject-sampler.ts.
+    minViews: 20_000,
+    maxMultiplier: MIN_MULTIPLIER,
+    total: 180,
+    perCreatorCap: 60,
+    capOverrides: {},
+    seed: 20260807,
   };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
@@ -64,12 +90,41 @@ function parseArgs(argv: string[]): Args {
     else if (t === '--admit') a.admit = true;
     else if (t === '--limit') a.limit = parseInt(argv[++i], 10);
     else if (t === '--status') a.statuses = argv[++i].split(',').map((s) => s.trim());
-    else throw new Error(`unknown argument: ${t}`);
+    else if (t === '--backfill') a.backfill = true;
+    else if (t === '--min-views') a.minViews = parseInt(argv[++i], 10);
+    else if (t === '--max-multiplier') a.maxMultiplier = Number(argv[++i]);
+    else if (t === '--total') a.total = parseInt(argv[++i], 10);
+    else if (t === '--per-creator-cap') a.perCreatorCap = parseInt(argv[++i], 10);
+    else if (t === '--seed') a.seed = parseInt(argv[++i], 10);
+    else if (t === '--cap') {
+      // --cap henryjwade=35, repeatable.
+      const raw = argv[++i] ?? '';
+      const [handle, n] = raw.split('=');
+      const parsed = parseInt(n, 10);
+      if (!handle || !Number.isInteger(parsed) || parsed < 0) {
+        throw new Error(`--cap requires <handle>=<non-negative integer> (got ${JSON.stringify(raw)})`);
+      }
+      a.capOverrides[handle] = parsed;
+    } else throw new Error(`unknown argument: ${t}`);
   }
   if (!Number.isFinite(a.limit) && a.limit !== Infinity) throw new Error('--limit requires a number');
   // Admitting a row without its file would put a status of 'scraped' on
   // something OCR cannot open — the stage selects on status AND videoPath.
   if (a.admit && !a.download) throw new Error('--admit requires --download: OCR needs the file, not just the URL');
+  if (!a.backfill) {
+    // These only shape the backfill draw. Silently ignoring them on the rescue
+    // path would let a mistyped run spend credits on the wrong rows.
+    for (const [flag, changed] of [
+      ['--min-views', a.minViews !== 20_000],
+      ['--max-multiplier', a.maxMultiplier !== MIN_MULTIPLIER],
+      ['--total', a.total !== 180],
+      ['--per-creator-cap', a.perCreatorCap !== 60],
+      ['--cap', Object.keys(a.capOverrides).length > 0],
+    ] as const) {
+      if (changed) throw new Error(`${flag} only applies with --backfill`);
+    }
+  }
+  if (a.backfill && !Number.isInteger(a.total)) throw new Error('--total requires an integer');
   return a;
 }
 
@@ -95,11 +150,85 @@ async function findTargets(rawRoot: string, statuses: string[]): Promise<Target[
     const entries = await loadManifest(path.join(rawRoot, handle));
     for (const e of entries) {
       if (!isCandidate(e, statuses)) continue;
-      out.push({ handle, shortcode: e.shortcode, multiplier: e.outlierMultiplier ?? null });
+      out.push({ handle, shortcode: e.shortcode, multiplier: e.outlierMultiplier ?? null, views: e.views });
     }
   }
   // Best candidates first, so a --limit or a credit floor keeps the strongest.
   return out.sort((a, b) => (b.multiplier ?? 0) - (a.multiplier ?? 0));
+}
+
+// Backfill selection: normal-performing videos, sampled rather than ranked.
+//
+// SKIP_HANDLES deliberately does NOT apply here. It exists because
+// henryjwade was scraped in top-bottom mode, so his outlierMultiplier cannot
+// be read as "beat his baseline by Nx" for the RESCUE path, which selects on
+// exactly that. The backfill does not select on the multiplier at all — only
+// on a views floor — so his rows are eligible. He is capped instead, via
+// --cap, because he is already 93 of the 175 corpus rows.
+async function findBackfillTargets(rawRoot: string, args: Args): Promise<Target[]> {
+  const dirs = (await fs.readdir(rawRoot, { withFileTypes: true }))
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+    .sort();
+
+  const pool: RejectCandidate[] = [];
+  for (const handle of dirs) {
+    for (const e of await loadManifest(path.join(rawRoot, handle))) {
+      pool.push({
+        handle,
+        shortcode: e.shortcode,
+        views: e.views,
+        durationSec: e.durationSec,
+        outlierMultiplier: e.outlierMultiplier,
+        status: e.status,
+      });
+    }
+  }
+
+  const criteria: SelectionCriteria = {
+    statuses: args.statuses,
+    minViews: args.minViews,
+    maxMultiplier: args.maxMultiplier,
+    maxDurationSec: MAX_DURATION_SEC,
+    total: args.total,
+    perCreatorCap: args.perCreatorCap,
+    capOverrides: args.capOverrides,
+    seed: args.seed,
+  };
+
+  return selectRejects(pool, criteria).map((r) => ({
+    handle: r.handle,
+    shortcode: r.shortcode,
+    multiplier: r.outlierMultiplier ?? null,
+    views: r.views,
+  }));
+}
+
+// Distribution summary for the dry run, so the draw can be inspected before
+// any credits are spent on it.
+function describeDraw(targets: Target[]): string[] {
+  const lines: string[] = [];
+  const bands: Array<[string, (m: number) => boolean]> = [
+    ['<0.5x', (m) => m < 0.5],
+    ['0.5-1.0x', (m) => m >= 0.5 && m < 1],
+    ['1.0-2.0x', (m) => m >= 1 && m < 2],
+    ['2.0-3.0x', (m) => m >= 2 && m < 3],
+  ];
+  lines.push('  by creator baseline multiplier:');
+  for (const [label, f] of bands) {
+    const n = targets.filter((t) => t.multiplier !== null && f(t.multiplier)).length;
+    lines.push(`    ${label.padEnd(10)}${String(n).padStart(4)}`);
+  }
+
+  const views = targets.map((t) => t.views ?? 0).filter((v) => v > 0).sort((a, b) => a - b);
+  if (views.length) {
+    const at = (p: number) => views[Math.min(views.length - 1, Math.floor(p * views.length))];
+    lines.push(
+      `  views: p10 ${at(0.1).toLocaleString()}  p50 ${at(0.5).toLocaleString()}  ` +
+        `p90 ${at(0.9).toLocaleString()}`,
+    );
+  }
+  return lines;
 }
 
 type Fetched = {
@@ -196,22 +325,51 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const rawRoot = path.join(process.cwd(), 'datasets', 'raw');
 
-  const all = await findTargets(rawRoot, args.statuses);
+  const all = args.backfill
+    ? await findBackfillTargets(rawRoot, args)
+    : await findTargets(rawRoot, args.statuses);
   const targets = Number.isFinite(args.limit) ? all.slice(0, args.limit) : all;
 
   const byHandle = new Map<string, number>();
   for (const t of all) byHandle.set(t.handle, (byHandle.get(t.handle) ?? 0) + 1);
 
   console.log(`status filter: ${args.statuses.join(', ')}`);
-  console.log(`${all.length} candidate rows (excluding ${[...SKIP_HANDLES].join(', ')}):`);
+  if (args.backfill) {
+    console.log(
+      `mode: BACKFILL — under-performers, >=${args.minViews.toLocaleString()} views, ` +
+        `<${args.maxMultiplier}x baseline, seed ${args.seed}`,
+    );
+    const caps = Object.entries(args.capOverrides).map(([h, n]) => `${h}=${n}`);
+    console.log(
+      `target ${args.total}, per-creator cap ${args.perCreatorCap}` +
+        (caps.length ? ` (overrides: ${caps.join(', ')})` : ''),
+    );
+    console.log(`\n${all.length} rows drawn:`);
+  } else {
+    console.log(`${all.length} candidate rows (excluding ${[...SKIP_HANDLES].join(', ')}):`);
+  }
   for (const [h, n] of [...byHandle.entries()].sort((a, b) => b[1] - a[1])) {
     console.log(`  ${h.padEnd(18)}${n}`);
   }
+  if (args.backfill) describeDraw(all).forEach((l) => console.log(l));
   console.log(
     `\nprocessing ${targets.length} — up to ${targets.length * CREDITS_PER_CALL} credits — ` +
       `mode: ${args.apply ? 'APPLY' : 'DRY RUN'}${args.download ? ' + DOWNLOAD' : ''}${args.admit ? ' + ADMIT' : ''}\n`,
   );
   if (!args.apply) {
+    // The SocialCrawl credits are only the entry fee — the Anthropic spend
+    // downstream is the larger and, at current balances, the binding cost.
+    // Rates are measured, not guessed: Stage A OCR ran 108 videos for $5.6726
+    // and Stage B descriptions 175 rows for $4.7880. 19% of B-roll carried no
+    // burned-in title at all, and those rows are paid for at OCR and then
+    // dropped before the description stage.
+    const ocr = targets.length * 0.0525;
+    const describe = targets.length * 0.81 * 0.0274;
+    console.log(
+      `downstream cost estimate: OCR $${ocr.toFixed(2)} + descriptions $${describe.toFixed(2)} ` +
+        `= ~$${(ocr + describe).toFixed(2)} (assumes the measured 19% no-title rate)`,
+    );
+    console.log(`expected usable rows: ~${Math.round(targets.length * 0.81)}\n`);
     console.log('dry run: nothing written. Re-run with --apply (add --download to fetch files).');
     console.log('NOTE: refreshed URLs expire in roughly 36 hours — download promptly.');
     return;

@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { performanceBand, buildUserMessage } from './generate';
 import type { CorpusTitle } from '../providers/types';
 
+// The exact heading, so these tests key on the new block rather than on prose
+// that also appears in the mimic section.
+const CONTRAST_HEADING = '## Titles that did NOT land';
+
 const ex = (title: string, score: number | null): CorpusTitle => ({
   id: title,
   title,
@@ -78,5 +82,61 @@ describe('buildUserMessage', () => {
   it('keeps the do-not-copy-specifics instruction', () => {
     const msg = buildUserMessage({ ...base, retrievedExamples: [ex('A line', 0.5)] });
     expect(msg).toMatch(/do not copy|Do not carry/i);
+  });
+});
+
+describe('buildUserMessage — contrast set', () => {
+  const base = {
+    description: {
+      scene: 'a man walks',
+      subject: 'a man',
+      setting: 'a street',
+      vibe: ['calm'],
+      visualHook: 'he turns',
+      rawJson: null,
+    },
+    requiredFamilies: ['relatable_pov' as const],
+  };
+
+  it('separates underperformers into their own block', () => {
+    const msg = buildUserMessage({
+      ...base,
+      retrievedExamples: [ex('Winner line', 0.95), ex('Flop line', 0.05)],
+    });
+    const mimicAt = msg.indexOf('Winner line');
+    const contrastAt = msg.indexOf('Flop line');
+    expect(mimicAt).toBeGreaterThan(-1);
+    expect(contrastAt).toBeGreaterThan(mimicAt);
+    // The failure must not sit in the list the model is told to copy.
+    expect(msg.slice(mimicAt, contrastAt)).toMatch(/did not|underperform|avoid/i);
+  });
+
+  it('carries the do-not-imitate instruction inside the contrast block itself', () => {
+    // Asserting against the whole message would pass on the pre-existing
+    // "mimic patterns, do not copy" heading and prove nothing, so this scopes
+    // the check to the text from the contrast heading onward.
+    const msg = buildUserMessage({
+      ...base,
+      retrievedExamples: [ex('Winner line', 0.95), ex('Flop line', 0.05)],
+    });
+    const block = msg.slice(msg.indexOf(CONTRAST_HEADING));
+    expect(block).toMatch(/do not (imitate|copy|reproduce)/i);
+  });
+
+  it('omits the contrast block entirely when nothing underperformed', () => {
+    const msg = buildUserMessage({
+      ...base,
+      retrievedExamples: [ex('Winner line', 0.95), ex('Also good', 0.8)],
+    });
+    expect(msg).not.toContain(CONTRAST_HEADING);
+  });
+
+  it('never lists an unmeasured row as a failure', () => {
+    const msg = buildUserMessage({
+      ...base,
+      retrievedExamples: [ex('Winner line', 0.95), ex('No data line', null)],
+    });
+    const idx = msg.indexOf(CONTRAST_HEADING);
+    expect(idx === -1 || msg.indexOf('No data line') < idx).toBe(true);
   });
 });

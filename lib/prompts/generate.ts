@@ -1,4 +1,5 @@
 import { HOOK_TAXONOMY, type HookFamily } from '@/lib/hooks/taxonomy';
+import { partitionByPerformance } from '@/lib/retrieval/contrast';
 import type { CorpusTitle, VisionDescription } from '@/lib/providers/types';
 
 // The system prompt is split into a CACHED prefix (taxonomy + global rules) and a
@@ -60,11 +61,24 @@ export function buildUserMessage(args: {
   retrievedExamples: CorpusTitle[];
   requiredFamilies: HookFamily[];
 }): string {
-  const examples = args.retrievedExamples.length
-    ? args.retrievedExamples
-        .map((e) => `- [${e.hookFamily}, ${performanceBand(e.performanceScore)}] ${e.title}`)
-        .join('\n')
+  // The corpus now spans the real performance range, so retrieval can return
+  // rows that genuinely did not work. They are split out rather than dropped:
+  // dropping them loses the only evidence in the corpus about what fails,
+  // while leaving them in the mimic list mostly just gets them mimicked.
+  // See lib/retrieval/contrast.ts.
+  const { mimic, contrast } = partitionByPerformance(args.retrievedExamples);
+
+  const examples = mimic.length
+    ? mimic.map((e) => `- [${e.hookFamily}, ${performanceBand(e.performanceScore)}] ${e.title}`).join('\n')
     : '(no retrieved examples — generate from taxonomy templates and creator voice)';
+
+  const contrastBlock = contrast.length
+    ? `
+
+## Titles that did NOT land for videos like this
+These are real titles from visually similar videos that ranked near the bottom of the corpus on share rate. Do not imitate them. Read them as evidence of what failed to earn a share here — a hook too vague to create recognition, a setup with no payoff, a line that describes the video instead of giving a reason to send it on.
+${contrast.map((e) => `- [${e.hookFamily}, ${performanceBand(e.performanceScore)}] ${e.title}`).join('\n')}`
+    : '';
 
   return `## Video description
 - scene: ${args.description.scene}
@@ -74,9 +88,10 @@ export function buildUserMessage(args: {
 - visual hook: ${args.description.visualHook}
 
 ## Titles from visually similar videos (mimic patterns, do not copy)
-Each is tagged with its hook family and how it ranked on share rate across the corpus. A smaller "top N%" performed better. Weight the better-performing patterns more heavily, and treat the weaker ones as showing what did NOT land for a video like this. "unmeasured" means no share data exists for that row — draw no conclusion from it either way.
+Each is tagged with its hook family and how it ranked on share rate across the corpus. A smaller "top N%" performed better, so weight those patterns more heavily. "unmeasured" means no share data exists for that row — draw no conclusion from it either way. Titles that clearly underperformed are not listed here; they appear in their own section below.
 ${examples}
 Do not carry a specific quantity, price, brand, or proper noun from a retrieved example into a new title unless the video description above actually supports it. You are free to invent your own number when the video genuinely shows a countable set.
+${contrastBlock}
 
 ## REQUIRED hook families (you MUST include at least one title for each)
 ${args.requiredFamilies.map((f) => `- ${f}`).join('\n')}
