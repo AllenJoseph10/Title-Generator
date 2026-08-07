@@ -25,6 +25,11 @@ export type ManifestEntry = {
   // status it was rescued from, so a re-admitted row is never indistinguishable
   // from one that passed the gate first time.
   readmittedFrom?: string;
+  // Set by scripts/apply-human-review.ts when a person clears (or confirms) a
+  // needs_review_* quarantine. The OCR stages never write it — a row carrying
+  // this field entered or left the corpus on human judgement, not on model
+  // agreement, and the string records who decided what and why.
+  humanReview?: string;
   rank?: 'top' | 'bottom';
   duplicateOfHandle?: string;
 
