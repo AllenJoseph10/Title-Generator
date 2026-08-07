@@ -34,7 +34,11 @@ import { loadManifest, saveManifest, type ManifestEntry } from './lib/manifest';
 const REVIEW_DATE = '2026-08-08';
 
 type Decision =
-  | { verdict: 'promote'; reason: string }
+  // `title`, when present, OVERRIDES what OCR read off the screen. It exists
+  // only for reviewer edits and is always disclosed in the humanReview string,
+  // because burned_in_title is verbatim everywhere else and a silent edit would
+  // make the manifest assert something about the video that is not true.
+  | { verdict: 'promote'; reason: string; title?: string }
   | { verdict: 'exclude'; status: string; reason: string };
 
 // Keyed by shortcode. Row numbers match the review listing.
@@ -65,8 +69,15 @@ const DECISIONS: Record<string, Decision> = {
   DXZano8PI_R: { verdict: 'promote', reason: 'valid title' },
   // 13
   DVL9JJ9DIUk: { verdict: 'exclude', status: 'excluded_human_review', reason: 'title names a specific place (Arctic Circle, Sweden)' },
-  // 14
-  DRNArZ4jLuC: { verdict: 'promote', reason: 'valid title' },
+  // 14 — kept, but the country flag is stripped. The reviewer's rule rejects
+  // titles anchored to a specific place, and a flag emoji is a place marker in
+  // the same way a place name is; the rest of the line is location-neutral, so
+  // the title is edited rather than discarded.
+  DRNArZ4jLuC: {
+    verdict: 'promote',
+    reason: 'valid title, but the country flag was removed by the reviewer as a place marker — STORED TITLE DIFFERS FROM THE ON-SCREEN TEXT, which ended "staycation...\u{1F1EC}\u{1F1E7}"',
+    title: 'Come with me to the perfect staycation...',
+  },
   // 15
   DQo6cLpDLE1: { verdict: 'exclude', status: 'excluded_human_review', reason: 'rejected in human review' },
   // 16
@@ -85,8 +96,14 @@ const DECISIONS: Record<string, Decision> = {
   DYJmDc1inxB: { verdict: 'exclude', status: 'excluded_human_review', reason: 'title names a specific place (Amsterdam)' },
   // 23
   DZ0NJAptOV2: { verdict: 'exclude', status: 'excluded_human_review', reason: 'rejected in human review' },
-  // 24-27 are deliberately absent: no verdict was given for them, so they stay
-  // in needs_review rather than defaulting either way.
+  // 24
+  DZLIdKMxPFB: { verdict: 'exclude', status: 'excluded_human_review', reason: 'rejected in human review' },
+  // 25
+  DSaOSwHDCLY: { verdict: 'exclude', status: 'excluded_human_review', reason: 'rejected in human review' },
+  // 26
+  DRCtAmqjBh9: { verdict: 'exclude', status: 'excluded_human_review', reason: 'rejected in human review' },
+  // 27
+  DWWpbAejDNp: { verdict: 'exclude', status: 'excluded_human_review', reason: 'rejected in human review' },
 };
 
 // Title source for a promoted row. Quarantined rows never had burnedInTitle
@@ -126,15 +143,20 @@ async function main() {
       if (!d) continue;
       seen.add(e.shortcode);
 
-      // Fail loudly rather than silently re-processing a row whose state moved
-      // since the review was written.
-      if (!/^needs_review/.test(e.status)) {
-        problems.push(`${handle}/${e.shortcode}: expected needs_review_*, found '${e.status}' — skipped`);
+      // A row is eligible either because it is still quarantined, or because
+      // this script already decided it and the reviewer is now amending that
+      // decision. Anything else means the state moved underneath the review and
+      // must be reported rather than silently overwritten.
+      if (!/^needs_review/.test(e.status) && !e.humanReview) {
+        problems.push(`${handle}/${e.shortcode}: expected needs_review_* or a prior humanReview, found '${e.status}' — skipped`);
         continue;
       }
 
       if (d.verdict === 'promote') {
-        const t = titleFor(e);
+        const read = titleFor(e);
+        const t = d.title
+          ? { title: d.title, source: `reviewer edit (OCR read ${JSON.stringify(read?.title ?? null)})` }
+          : read;
         if (!t) {
           problems.push(`${handle}/${e.shortcode}: promote requested but neither pass produced a title — skipped`);
           continue;

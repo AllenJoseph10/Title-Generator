@@ -155,6 +155,24 @@ async function loadCorpus(): Promise<Row[]> {
     }
     if (page.length < PAGE) break;
   }
+
+  // Re-sort on CONTENT, not on `id`.
+  //
+  // `order=id` above is required for stable pagination, but corpus_titles.id is
+  // `uuid default gen_random_uuid()` and import-dataset.ts replaces the whole
+  // table, so every import assigns every row a fresh random id. Row order
+  // therefore changed on each import, which changed the seeded fold partition,
+  // which moved the headline — with nothing in the data having changed.
+  //
+  // Measured on the 259-row corpus, varying only the partition: 0.210, 0.243,
+  // 0.250, 0.264, 0.266, 0.293 — a range of 0.083, comparable to the headline
+  // itself. Three "before/after" comparisons across imports were made before
+  // this was found and none of them were distinguishable from this effect.
+  //
+  // Sorting by (title, hook_family) makes a run a function of the corpus's
+  // CONTENT and the seed alone, so two imports of the same data now produce the
+  // same number and a genuine change is no longer masked by a reshuffle.
+  rows.sort((a, b) => a.title.localeCompare(b.title) || a.hook_family.localeCompare(b.hook_family));
   return rows;
 }
 

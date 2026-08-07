@@ -241,6 +241,56 @@ by hook family
   listicle_reveal         n=16    0.540
 ```
 
+### CORRECTION 2026-08-08 — earlier cross-import comparisons were invalid
+
+**Any comparison of headline numbers across imports made before this date should
+be disregarded, including "0.259 -> 0.304" as evidence the signal strengthened.**
+
+`corpus_titles.id` is `uuid default gen_random_uuid()` and `import-dataset.ts`
+replaces the whole table, so every import assigned every row a fresh random id.
+`loadCorpus` paged with `order=id`, so **row order changed on every import**.
+Row order feeds the seeded fold partition, so the headline moved when nothing in
+the data had changed.
+
+Measured on one fixed 259-row corpus, varying only the partition:
+
+```
+0.210   0.243   0.250   0.264   0.266   0.293      range 0.083
+```
+
+That range is comparable to the headline itself, and it swamps every corpus
+change measured during the backfill. Three cross-import comparisons were made
+before this was found; none of them were distinguishable from this effect.
+
+**Fixed** by re-sorting on `(title, hook_family)` after fetching, so a run is a
+function of the corpus's content and the seed alone. Two imports of identical
+data now produce identical output.
+
+**Residual, not a bug:** partition sensitivity remains real even with stable
+ordering. Across six seeds on the 259-row corpus the headline reads 0.263,
+0.273, 0.235, 0.210, 0.245, 0.258 — **mean ~0.247, SD ~0.023**. A single-seed
+headline therefore carries roughly +/-0.023 of partition noise *on top of* the
+~0.063 sampling SE. **Report the mean across several seeds; do not quote a
+single-seed figure as the result.**
+
+### Honest status of the backfill
+
+On the numbers above, **the corpus expansion did not produce a measurable change
+in the headline.** It read ~0.26 on 175 rows and reads ~0.25 (6-seed mean) on
+259. The two are indistinguishable given partition and sampling noise. Claims
+that the backfill improved ranking performance are not supported.
+
+What the backfill *did* deliver, and what still stands:
+
+- **`listicle_reveal` clears the n=10 floor** (n=17), so all five hook families
+  now report for the first time.
+- **The corpus spans the real performance range** rather than winners only. That
+  is what makes the contrast block in `lib/retrieval/contrast.ts` possible at
+  all, and it removes a range restriction that would have capped any future
+  measurement.
+- **`marvinbrooks` goes 0 -> 4 rows**, a creator previously absent entirely.
+- **The reach-vs-share finding** (below), which is independent of the headline.
+
 ### This is NOT a clean before/after against the 0.259 run
 
 The headline moved 0.259 -> 0.304 and the sampling SE fell 0.076 -> 0.064, but
