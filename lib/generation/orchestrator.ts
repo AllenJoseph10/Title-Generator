@@ -1,7 +1,7 @@
 import 'server-only';
 import { extractFrames } from '@/lib/media/frames';
 import { probeVideo } from '@/lib/media/probe';
-import { classifyCandidates } from '@/lib/hooks/classify';
+import { classifyCandidates, familiesFromNeighbours } from '@/lib/hooks/classify';
 import type { HookFamily } from '@/lib/hooks/taxonomy';
 import type {
   GeneratedTitle,
@@ -97,11 +97,6 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
     throw new PipelineError('vision', e.message);
   });
 
-  const requiredFamilies: HookFamily[] = classifyCandidates(
-    visionRes.description.vibe,
-    visionRes.description.visualHook,
-  );
-
   // Embed the query (scene + visual hook) and retrieve corpus neighbors.
   const queryText = `${visionRes.description.scene} ${visionRes.description.visualHook}`.slice(0, 8000);
   const queryEmbed = await embed(queryText).catch((e: Error) => {
@@ -110,6 +105,19 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
   const retrieval = await retrieveAndRerank(input.nicheId, queryEmbed.vector).catch((e: Error) => {
     throw new PipelineError('vision', `retrieve: ${e.message}`);
   });
+
+  // Which hook families the generator must cover, derived from the videos
+  // retrieval actually found similar. This runs after retrieval by necessity:
+  // it reads the neighbours' labels.
+  //
+  // classifyCandidates remains only as the cold-start fallback, for a niche
+  // with no corpus yet. It is a keyword matcher over vibe adjectives, and an
+  // audit against the 175 labelled rows found it returned the same three
+  // families for 83% of them (scripts/audit-family-selector.ts).
+  const requiredFamilies: HookFamily[] =
+    retrieval.examples.length > 0
+      ? familiesFromNeighbours(retrieval.examples)
+      : classifyCandidates(visionRes.description.vibe, visionRes.description.visualHook);
 
   const generator = selectGenerationProvider(input.generationProviderId);
   const genRes = await generator

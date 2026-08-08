@@ -42,7 +42,19 @@ describe('computeTitlePrior blend parameter', () => {
     expect(computeTitlePrior(e0, 'relatable_pov', withNull, 0)).toBeCloseTo(1.0, 10);
   });
 
-  it('exports the app default unchanged', () => {
-    expect(FAMILY_PRIOR_BLEND).toBe(0.3);
+  it('exports the app default, which is now 0', () => {
+    // Was 0.3. Changed on measurement — the family term never helped and
+    // usually hurt across every eval configuration tested. The parameter is
+    // kept rather than deleted because the eval needs blend=1 for its
+    // family-term baseline. See the comment in lib/retrieval/prior.ts.
+    expect(FAMILY_PRIOR_BLEND).toBe(0);
+  });
+
+  it('the shipped default now equals the pure neighbour mean', () => {
+    // With blend 0 the family term drops out entirely, so the default path
+    // and an explicit blend of 0 must agree exactly.
+    expect(computeTitlePrior(e0, 'relatable_pov', neighbors)).toBe(
+      computeTitlePrior(e0, 'relatable_pov', neighbors, 0),
+    );
   });
 });

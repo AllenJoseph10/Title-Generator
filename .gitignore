@@ -34,3 +34,4 @@ datasets/raw/
 .vscode/
 .idea/
 *.log
+datasets/raw/_embedding-variants/

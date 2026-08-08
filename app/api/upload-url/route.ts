@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSignedUpload } from '@/lib/storage/upload';
-import { MAX_BYTES, isAcceptedMime } from '@/lib/storage/constants';
+import { MAX_BYTES, isAcceptedMime, rejectUpload } from '@/lib/storage/constants';
 
 export const runtime = 'nodejs';
 
@@ -11,11 +11,18 @@ export async function POST(req: NextRequest) {
   if (!body || typeof body.filename !== 'string' || typeof body.mime !== 'string' || typeof body.size !== 'number') {
     return NextResponse.json({ error: 'filename, mime, size required' }, { status: 400 });
   }
+  // page.tsx pipes `error` straight into a toast, so these strings are read by
+  // a user, not just a log. `size out of range: 83309337` named neither the
+  // limit nor the units and suggested nothing — rejectUpload is shared with
+  // the dropzone so both layers say the same actionable thing.
+  // The mime guard stays a distinct statement because it also narrows the type
+  // that createSignedUpload requires; folding it into one call loses that.
   if (!isAcceptedMime(body.mime)) {
-    return NextResponse.json({ error: `unsupported mime: ${body.mime}` }, { status: 415 });
+    return NextResponse.json({ error: rejectUpload(body.size, body.mime) }, { status: 415 });
   }
-  if (body.size <= 0 || body.size > MAX_BYTES) {
-    return NextResponse.json({ error: `size out of range: ${body.size}` }, { status: 413 });
+  const problem = rejectUpload(body.size, body.mime);
+  if (problem) {
+    return NextResponse.json({ error: problem }, { status: body.size > MAX_BYTES ? 413 : 400 });
   }
 
   const signed = await createSignedUpload(body.mime);

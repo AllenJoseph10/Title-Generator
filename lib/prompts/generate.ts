@@ -1,4 +1,5 @@
 import { HOOK_TAXONOMY, type HookFamily } from '@/lib/hooks/taxonomy';
+import { partitionByPerformance } from '@/lib/retrieval/contrast';
 import type { CorpusTitle, VisionDescription } from '@/lib/providers/types';
 
 // The system prompt is split into a CACHED prefix (taxonomy + global rules) and a
@@ -39,16 +40,45 @@ export function buildCreatorBlock(args: { styleBrief: string; styleFingerprint: 
   return `## Niche style brief\n${args.styleBrief}\n\n${fingerprint}`;
 }
 
+// Render a percentile rank as a band the model can order by.
+//
+// `performanceScore` is a percentile RANK across the corpus, so 0.88 means the
+// row beat 88% of it — the top 12%. Clamped at 1% so the single best row does
+// not render as "top 0%", which reads as an error rather than a superlative.
+//
+// A null score is stated as unmeasured rather than defaulted. Three corpus
+// rows genuinely have no share reading, and rendering those as "top 100%"
+// would tell the model they were the worst performers — a claim the data does
+// not make. Same reasoning as treating a null performance_score as unscored
+// rather than zero throughout the importer and prior.
+export function performanceBand(score: number | null): string {
+  if (score === null) return 'unmeasured';
+  return `top ${Math.max(1, Math.round((1 - score) * 100))}%`;
+}
+
 export function buildUserMessage(args: {
   description: VisionDescription;
   retrievedExamples: CorpusTitle[];
   requiredFamilies: HookFamily[];
 }): string {
-  const examples = args.retrievedExamples.length
-    ? args.retrievedExamples
-        .map((e) => `- [${e.hookFamily}] ${e.title}`)
-        .join('\n')
+  // The corpus now spans the real performance range, so retrieval can return
+  // rows that genuinely did not work. They are split out rather than dropped:
+  // dropping them loses the only evidence in the corpus about what fails,
+  // while leaving them in the mimic list mostly just gets them mimicked.
+  // See lib/retrieval/contrast.ts.
+  const { mimic, contrast } = partitionByPerformance(args.retrievedExamples);
+
+  const examples = mimic.length
+    ? mimic.map((e) => `- [${e.hookFamily}, ${performanceBand(e.performanceScore)}] ${e.title}`).join('\n')
     : '(no retrieved examples — generate from taxonomy templates and creator voice)';
+
+  const contrastBlock = contrast.length
+    ? `
+
+## Titles that did NOT land for videos like this
+These are real titles from visually similar videos that ranked near the bottom of the corpus on share rate. Do not imitate them. Read them as evidence of what failed to earn a share here — a hook too vague to create recognition, a setup with no payoff, a line that describes the video instead of giving a reason to send it on.
+${contrast.map((e) => `- [${e.hookFamily}, ${performanceBand(e.performanceScore)}] ${e.title}`).join('\n')}`
+    : '';
 
   return `## Video description
 - scene: ${args.description.scene}
@@ -57,9 +87,11 @@ export function buildUserMessage(args: {
 - vibe: ${args.description.vibe.join(', ')}
 - visual hook: ${args.description.visualHook}
 
-## Retrieved high-performing examples (mimic patterns, do not copy)
+## Titles from visually similar videos (mimic patterns, do not copy)
+Each is tagged with its hook family and how it ranked on share rate across the corpus. A smaller "top N%" performed better, so weight those patterns more heavily. "unmeasured" means no share data exists for that row — draw no conclusion from it either way. Titles that clearly underperformed are not listed here; they appear in their own section below.
 ${examples}
 Do not carry a specific quantity, price, brand, or proper noun from a retrieved example into a new title unless the video description above actually supports it. You are free to invent your own number when the video genuinely shows a countable set.
+${contrastBlock}
 
 ## REQUIRED hook families (you MUST include at least one title for each)
 ${args.requiredFamilies.map((f) => `- ${f}`).join('\n')}

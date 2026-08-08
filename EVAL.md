@@ -208,18 +208,181 @@ things. Check 2 is the falsifiable one; check 1 is a regression guard.
 Both checks throw (non-zero exit) on failure; the main report never does — it
 is a measurement, not a gate.
 
-## Current numbers
+## THE BASELINE — compare future changes against this
+
+Established 2026-08-08 on the **259-row corpus**, after the row-order defect
+below was fixed and `--repeats` was raised from 5 to 25. Produced by
+`npm run eval` with no flags. Takes ~10 seconds and costs nothing: every
+embedding is already in Postgres.
+
+```
+eval — 253 of 259 rows scoreable, 5-fold x 25 repeats, seed 20260804
+ground truth: performance_score        funnel: top-30 -> MMR(8, lambda=0.6)
+family blend: 0
+
+Spearman (headline)      0.261 (fold-assignment spread 0.033 across 25 seeds)
+  sampling SE (n=253)   ~0.063
+  baseline: shuffled (5000 draws)         -0.001 +/- 0.064
+  baseline: family term only (blend=1)     0.166 +/- 0.036
+  baseline: family mean (train, out-of-fold)  -0.174 +/- 0.063
+    permuted-family null (5000 draws)        -0.051 +/- 0.085   (observed is -1.45 SD from it — INSIDE the null)
+  baseline: family mean (in-sample, reference) 0.054 +/- 0.000
+
+family term fallback: 9.0% of predictions
+
+slate precision (10 candidates, 200 slates x 25 repeats)
+  @3   0.406 +/- 0.024   (random 0.300; shuffled null 0.299 +/- 0.232 per slate)
+  @5   0.578 +/- 0.018   (random 0.500; shuffled null 0.503 +/- 0.166 per slate)
+
+by hook family
+  transformation_tease    n=75    0.196
+  setup_trivial_reveal    n=63    0.251
+  relatable_pov           n=54    0.288
+  reaction_humblebrag     n=44    0.345
+  listicle_reveal         n=17    0.515
+```
+
+**Reproducible:** at 25 repeats the seed-to-seed range is **0.011** (0.261,
+0.255, 0.250 at seeds 20260804 / 1 / 2). At the old default of 5 it was 0.038.
+50 repeats is no better than 25 (range 0.015), so convergence has plateaued and
+the residual ~0.01 is genuine.
+
+### What size of change this harness can actually detect
+
+The two kinds of comparison have very different noise floors. Conflating them is
+how three invalid results were reported during the backfill.
+
+**Paired — a config change on the SAME corpus.** Prompt wording, funnel
+constants, family blend, MMR lambda, contrast thresholds. Sampling error largely
+cancels because both arms score identical rows, so the floor is partition noise,
+**~±0.011**. A shift of **0.02–0.03 is meaningful if it holds across several
+seeds**. This is how `FAMILY_PRIOR_BLEND` was settled — the evidence was a
+monotone ordering across four paired points, never a single pair.
+
+**Unpaired — a corpus change.** Adding creators or rows. `performance_score` is
+a corpus-relative percentile, so the ground truth is *redefined* and the
+**~±0.063** sampling SE applies in full without cancelling. **Changes below
+roughly 0.13 are not detectable this way at n=253.**
+
+Practical consequence: **use this harness to tune the system, not to prove the
+corpus improved.** Corpus growth should be justified on coverage — families
+clearing the n=10 floor, creators represented, performance range spanned — not
+on the headline moving.
+
+### CORRECTION 2026-08-08 — earlier cross-import comparisons were invalid
+
+**Any comparison of headline numbers across imports made before this date should
+be disregarded, including "0.259 -> 0.304" as evidence the signal strengthened.**
+
+`corpus_titles.id` is `uuid default gen_random_uuid()` and `import-dataset.ts`
+replaces the whole table, so every import assigned every row a fresh random id.
+`loadCorpus` paged with `order=id`, so **row order changed on every import**.
+Row order feeds the seeded fold partition, so the headline moved when nothing in
+the data had changed.
+
+Measured on one fixed 259-row corpus, varying only the partition:
+
+```
+0.210   0.243   0.250   0.264   0.266   0.293      range 0.083
+```
+
+That range is comparable to the headline itself, and it swamps every corpus
+change measured during the backfill. Three cross-import comparisons were made
+before this was found; none of them were distinguishable from this effect.
+
+**Fixed** by re-sorting on `(title, hook_family)` after fetching, so a run is a
+function of the corpus's content and the seed alone. Two imports of identical
+data now produce identical output.
+
+**Residual, not a bug:** partition sensitivity remains real even with stable
+ordering. Across six seeds on the 259-row corpus the headline reads 0.263,
+0.273, 0.235, 0.210, 0.245, 0.258 — **mean ~0.247, SD ~0.023**. A single-seed
+headline therefore carries roughly +/-0.023 of partition noise *on top of* the
+~0.063 sampling SE. **Report the mean across several seeds; do not quote a
+single-seed figure as the result.**
+
+### Honest status of the backfill
+
+On the numbers above, **the corpus expansion did not produce a measurable change
+in the headline.** It read ~0.26 on 175 rows and reads ~0.25 (6-seed mean) on
+259. The two are indistinguishable given partition and sampling noise. Claims
+that the backfill improved ranking performance are not supported.
+
+What the backfill *did* deliver, and what still stands:
+
+- **`listicle_reveal` clears the n=10 floor** (n=17), so all five hook families
+  now report for the first time.
+- **The corpus spans the real performance range** rather than winners only. That
+  is what makes the contrast block in `lib/retrieval/contrast.ts` possible at
+  all, and it removes a range restriction that would have capped any future
+  measurement.
+- **`marvinbrooks` goes 0 -> 4 rows**, a creator previously absent entirely.
+- **The reach-vs-share finding** (below), which is independent of the headline.
+
+### This is NOT a clean before/after against the 0.259 run
+
+The headline moved 0.259 -> 0.304 and the sampling SE fell 0.076 -> 0.064, but
+**the two numbers are not measurements of the same thing**, and the difference
+must not be read as "the prior improved by 0.045":
+
+- **The ground truth itself changed.** `performance_score` is a percentile rank
+  over the corpus. Adding 76 rows re-ranked every existing row, so the target
+  being predicted is a different variable, not a more precisely measured one.
+- **The share-rate denominator changed.** `merge-dataset` now divides shares by
+  the view count fetched in the *same* SocialCrawl call rather than the stored
+  Apify figure. Existing rows move by <0.1%, but it is still a definitional
+  change to the metric.
+- **The gain sits inside the sampling SE.** +0.045 against an SE of ~0.064 is
+  not a distinguishable improvement on its own.
+
+What the run does support: the signal **held and did not degrade** when the
+corpus was widened from winners-only to a population spanning the real
+performance range, measured with a tighter error bar. That is the outcome that
+would have been most in doubt — a large fall would have suggested the original
+0.259 was partly an artifact of winners-only structure. It was not.
+
+One unambiguous gain: `listicle_reveal` clears the n=10 floor for the first
+time (n=16, 0.540), so all five families now report.
+
+### What the backfill established about reach vs. titles
+
+The backfill was selected on a **views floor only**, with no filter on
+performance, specifically so it could answer whether low view counts indicate
+weak titles or just lost reach lotteries. Two results, and they are not in
+tension:
+
+1. **The backfill rows scatter across the whole percentile range** — median
+   0.475 against the originals' 0.537, with heavy overlap, and only 22 of 73
+   landing below 0.35. Videos that lost on reach are *not* concentrated at the
+   bottom on share rate.
+
+2. **But reach and share rate are substantially correlated**:
+   `Spearman(view_outlier, share_rate) = 0.436` (n=245, SE ~0.064), holding
+   within creator too (mean 0.433 across the 9 creators with n>=10). Note the
+   sign of the artifact: the two metrics share `views` in opposite positions,
+   which induces a *spurious negative* correlation, so the true relationship is
+   more positive than 0.436.
+
+Together: reach is neither pure luck nor a clean quality signal — about 19% of
+rank variance is shared. **This corrects an earlier claim in this project that
+`share_rate` "conditions on reach" and is therefore immune to the distribution
+lottery. It is not immune.** The original 3x view gate was consequently not
+selecting purely on noise, which means the pre-backfill corpus was genuinely
+range-restricted on the outcome, and widening it was worth doing.
+
+### Prior numbers, for reference
 
 Run 2026-08-04, seed 20260804, 175-row corpus:
 
 ```
+
 eval — 172 of 175 rows scoreable, 5-fold x 5 repeats, seed 20260804
 ground truth: performance_score        funnel: top-30 -> MMR(8, lambda=0.6)
-family blend: 0.3
+family blend: 0
 
-Spearman (headline)      0.232 (fold-assignment spread 0.023 across 5 seeds)
+Spearman (headline)      0.259 (fold-assignment spread 0.022 across 5 seeds)
   sampling SE (n=172)   ~0.076  (analytic, 1/sqrt(n-1) — the dominant uncertainty, not the spread above)
-  baseline: shuffled (1000 draws)         -0.003 +/- 0.077
+  baseline: shuffled (1000 draws)         -0.003 +/- 0.076
   baseline: family term only (blend=1)     0.115 +/- 0.026
   baseline: family mean (train, out-of-fold)  -0.101 +/- 0.035
     permuted-family null (1000 draws)        -0.076 +/- 0.107   (observed is -0.23 SD from it — INSIDE the null)
@@ -231,19 +394,30 @@ Spearman (headline)      0.232 (fold-assignment spread 0.023 across 5 seeds)
 family term fallback: 10.6% of predictions (no same-family neighbour retrieved; family term only == neighbour term for these rows)
 
 slate precision (10 candidates, 200 slates x 5 repeats)
-  @3   0.429 +/- 0.044 across repeats   (random 0.300; shuffled null 0.310 +/- 0.234 per slate, SE of null mean 0.007)
-  @5   0.571 +/- 0.010 across repeats   (random 0.500; shuffled null 0.493 +/- 0.167 per slate, SE of null mean 0.005)
+  @3   0.436 +/- 0.022 across repeats   (random 0.300; shuffled null 0.304 +/- 0.231 per slate, SE of null mean 0.007)
+  @5   0.585 +/- 0.009 across repeats   (random 0.500; shuffled null 0.492 +/- 0.170 per slate, SE of null mean 0.005)
     the +/- across repeats is spread over 5 fold partitions of the SAME rows and the null's SE assumes slates are independent when they resample one 172-row pool — both understate uncertainty. Read the gap against the null as a direction, not a measured effect size.
 
 by hook family
-  transformation_tease    n=51    0.224
-  setup_trivial_reveal    n=46    0.023
-  relatable_pov           n=34    0.225
-  reaction_humblebrag     n=33    0.411
+  transformation_tease    n=51    0.243
+  setup_trivial_reveal    n=46    0.170
+  relatable_pov           n=34    0.208
+  reaction_humblebrag     n=33    0.378
   listicle_reveal         n=8     n/a (below 10)
 ```
 
-**Interpretation:** The headline (0.232) sits roughly three sampling-SEs
+**On the shipped family blend.** `FAMILY_PRIOR_BLEND` was 0.3 and is now **0**,
+changed on the strength of this harness. Sweeping it on identical rows and
+folds gave a clean monotone decline — 0 → 0.259, 0.15 → 0.252, 0.3 → 0.232,
+0.5 → 0.194 — and blend 0 held its lead at 15 repeats (0.279 vs 0.252), on a
+different seed (0.250 vs 0.237), and tied on `view_outlier_score` (0.369 vs
+0.368). It was never worse in any configuration tested. Each individual gap
+sits inside the ~0.076 sampling SE; the monotone ordering across four paired
+points is the evidence, not any single pair. **The shipped prior is therefore
+now purely the neighbour mean**, and the family-term lines below are baselines
+rather than components of it.
+
+**Interpretation:** The headline (0.259) sits roughly three sampling-SEs
 (~0.076 each) above the 1000-draw shuffled null, which is now properly
 centred close to zero (−0.003 ± 0.077). It also clears the `family term only`
 figure (0.115) by roughly 0.12 — the closest thing in this report to evidence
@@ -259,8 +433,8 @@ reads −0.076 ± 0.107) and the headline carries only a smaller analogous
 penalty, not none, so the two are not apples-to-apples and this reads as "the
 prior beats a baseline that is itself biased downward," not as a precise 0.33
 margin. That is a real, positive, but modest signal on a thin corpus: description-space
-retrieval plus the app's blended prior orders held-out real titles better
-than chance, but 0.232 is a moderate rank correlation, not a strong one, and
+retrieval plus the app's neighbour-mean prior orders held-out real titles better
+than chance, but 0.259 is a moderate rank correlation, not a strong one, and
 the sampling SE (~0.076) is large enough relative to the headline itself that
 this should be read as "probably better than chance" rather than as a
 precisely known effect size. Per-family results are uneven (0.023 to 0.411,
@@ -289,7 +463,7 @@ prior, retrieval, or the corpus. There is no before/after here.
 What the numbers above legitimately support is a proxy, not a direct
 measurement: **slate precision@5** — rank 10 held-out *real corpus titles* by
 the prior, take the top 5, count how many were genuinely top-5 by ground
-truth — reads **0.571 ± 0.010** (spread across the 5 repeats) against a
+truth — reads **0.585 ± 0.009** (spread across the 5 repeats) against a
 **0.500** analytic random baseline and a **0.493 ± 0.167** measured shuffled
 null (per slate). That is evidence about the ranking signal, not a measurement
 of the shipped feature, because it is measured on corpus titles the app
@@ -301,7 +475,7 @@ time.
 0.500 baseline is a fair stand-in only if the order the model emits titles in
 is uncorrelated with their quality — plausible, but unstated until now and
 untested here; if emission order already carried some quality signal, the true
-improvement is smaller than 0.571 − 0.500.
+improvement is smaller than 0.585 − 0.500.
 
 **On the size of the margin.** The +0.078 gap over the shuffled null is about
 0.47 of one slate's SD, and roughly 15 SEs of the null's *mean* — but that SE
@@ -317,7 +491,7 @@ Do not read it as validation that the 5-of-10 change works well in production.
 | Flag | Default | Purpose |
 |---|---|---|
 | `--seed <n>` | `20260804` | Reproducibility; also seeds the null draws and slate sampling |
-| `--repeats <n>` | `5` | Number of independent stratified 5-fold splits to average over |
+| `--repeats <n>` | `25` | Number of independent stratified 5-fold splits to average over |
 | `--ground-truth <col>` | `performance_score` | `view_outlier_score` runs the alternative ground truth |
 | `--family-blend <x>` | `0.3` | Weight on the family term in `computeTitlePrior`; `0` isolates neighbours, `1` gives family-term-only |
 | `--slate-size <n>` | `10` | Candidates per sampled slate for the precision@k metric |

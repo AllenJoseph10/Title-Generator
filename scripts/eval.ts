@@ -19,6 +19,7 @@
 //
 // See docs/superpowers/specs/2026-08-04-eval-harness-design.md and EVAL.md.
 
+import fs from 'node:fs';
 import { loadEnvLocal, requireEnv } from './lib/load-env';
 import { mulberry32, groupByTitle, assignFolds, rowsInFold, type TitleGroup } from './lib/eval-split';
 import { spearman, slatePrecisionAtK, meanSd } from './lib/eval-metrics';
@@ -29,7 +30,19 @@ import type { HookFamily } from '../lib/hooks/taxonomy';
 
 const DEFAULT_SEED = 20260804;
 const FOLDS = 5;
-const REPEATS = 5;
+// Was 5. Raised to 25 on measurement: 5 repeats does not average out fold
+// partition noise, so the headline moved with the seed by more than any real
+// change would. Measured on the 259-row corpus, seeds 20260804/1/2:
+//
+//    5 repeats -> 0.263, 0.273, 0.235   (seed-to-seed range 0.038)
+//   25 repeats -> 0.261, 0.255, 0.250   (range 0.011)
+//   50 repeats -> 0.261, 0.256, 0.246   (range 0.015 — no better than 25)
+//
+// Convergence plateaus at 25; the residual ~0.01 is genuine and is negligible
+// beside the ~0.063 sampling SE at this corpus size. A default that needs a
+// flag to be trustworthy is not a default, so this is the shipped value —
+// a run costs nothing but time (embeddings are already in Postgres).
+const REPEATS = 25;
 const SLATES = 200;
 const SLATE_SIZE = 10;
 const MIN_FAMILY_N = 10;
@@ -59,6 +72,17 @@ type Options = {
   blend: number;
   slateSize: number;
   sanity: boolean;
+  // Funnel geometry. Defaults come from lib/retrieval/constants so the eval
+  // measures the shipped configuration; overriding them is how you find out
+  // whether the shipped values are any good. They were chosen by intuition
+  // and never tested.
+  rpcLimit: number;
+  finalK: number;
+  mmrLambda: number;
+  // Swap description vectors for a locally-computed alternative, to test
+  // whether embedding richer text improves retrieval without touching the
+  // corpus. JSON: { "<corpus id>": number[] }.
+  embeddings: string | null;
 };
 
 function parseArgs(argv: string[]): Options {
@@ -69,6 +93,10 @@ function parseArgs(argv: string[]): Options {
     blend: FAMILY_PRIOR_BLEND,
     slateSize: SLATE_SIZE,
     sanity: false,
+    rpcLimit: RPC_LIMIT,
+    finalK: FINAL_K,
+    mmrLambda: MMR_LAMBDA,
+    embeddings: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -76,6 +104,10 @@ function parseArgs(argv: string[]): Options {
     else if (a === '--repeats') o.repeats = parseInt(argv[++i], 10);
     else if (a === '--slate-size') o.slateSize = parseInt(argv[++i], 10);
     else if (a === '--family-blend') o.blend = Number(argv[++i]);
+    else if (a === '--rpc-limit') o.rpcLimit = parseInt(argv[++i], 10);
+    else if (a === '--final-k') o.finalK = parseInt(argv[++i], 10);
+    else if (a === '--mmr-lambda') o.mmrLambda = Number(argv[++i]);
+    else if (a === '--embeddings') o.embeddings = argv[++i];
     else if (a === '--sanity') o.sanity = true;
     else if (a === '--ground-truth') {
       const v = argv[++i];
@@ -88,6 +120,10 @@ function parseArgs(argv: string[]): Options {
   if (!Number.isFinite(o.seed)) throw new Error('--seed requires a number');
   if (!Number.isInteger(o.repeats) || o.repeats < 1) throw new Error('--repeats requires a positive integer');
   if (!(o.blend >= 0 && o.blend <= 1)) throw new Error('--family-blend must be between 0 and 1');
+  if (!Number.isInteger(o.rpcLimit) || o.rpcLimit < 1) throw new Error('--rpc-limit requires a positive integer');
+  if (!Number.isInteger(o.finalK) || o.finalK < 1) throw new Error('--final-k requires a positive integer');
+  if (o.finalK > o.rpcLimit) throw new Error('--final-k cannot exceed --rpc-limit');
+  if (!(o.mmrLambda >= 0 && o.mmrLambda <= 1)) throw new Error('--mmr-lambda must be between 0 and 1');
   return o;
 }
 
@@ -131,6 +167,24 @@ async function loadCorpus(): Promise<Row[]> {
     }
     if (page.length < PAGE) break;
   }
+
+  // Re-sort on CONTENT, not on `id`.
+  //
+  // `order=id` above is required for stable pagination, but corpus_titles.id is
+  // `uuid default gen_random_uuid()` and import-dataset.ts replaces the whole
+  // table, so every import assigns every row a fresh random id. Row order
+  // therefore changed on each import, which changed the seeded fold partition,
+  // which moved the headline — with nothing in the data having changed.
+  //
+  // Measured on the 259-row corpus, varying only the partition: 0.210, 0.243,
+  // 0.250, 0.264, 0.266, 0.293 — a range of 0.083, comparable to the headline
+  // itself. Three "before/after" comparisons across imports were made before
+  // this was found and none of them were distinguishable from this effect.
+  //
+  // Sorting by (title, hook_family) makes a run a function of the corpus's
+  // CONTENT and the seed alone, so two imports of the same data now produce the
+  // same number and a genuine change is no longer masked by a reshuffle.
+  rows.sort((a, b) => a.title.localeCompare(b.title) || a.hook_family.localeCompare(b.hook_family));
   return rows;
 }
 
@@ -143,17 +197,22 @@ async function loadCorpus(): Promise<Row[]> {
 // Returns the neighbours rather than a score, so the headline and the
 // retrieval-dependent baselines can all be computed from ONE retrieval.
 // Scoring twice would double the runtime for an identical neighbour set.
-function retrieveNeighbors(test: Row, train: Row[], gt: GroundTruth): CorpusNeighbor[] {
+function retrieveNeighbors(
+  test: Row,
+  train: Row[],
+  gt: GroundTruth,
+  funnel: { rpcLimit: number; finalK: number; mmrLambda: number },
+): CorpusNeighbor[] {
   const scored = train.map((t) => ({ row: t, sim: cosineSimilarity(test.descVec, t.descVec) }));
   scored.sort((a, b) => b.sim - a.sim);
 
-  const candidates: MmrCandidate<Row>[] = scored.slice(0, RPC_LIMIT).map((s) => ({
+  const candidates: MmrCandidate<Row>[] = scored.slice(0, funnel.rpcLimit).map((s) => ({
     item: s.row,
     relevance: s.sim,
     embedding: s.row.titleVec, // MMR diversifies as TITLES, as in the app
   }));
 
-  return mmrRerank(candidates, FINAL_K, MMR_LAMBDA).map((c) => ({
+  return mmrRerank(candidates, funnel.finalK, funnel.mmrLambda).map((c) => ({
     hook_family: c.item.hook_family,
     performance_score: c.item[gt],
     embedding: c.item.titleVec,
@@ -289,7 +348,7 @@ function runRepeat(rows: Row[], gt: GroundTruth, opts: Options, seed: number): P
     for (const row of testRows) {
       // One retrieval, multiple scorings — every baseline below reuses the
       // same neighbours and costs only an extra arithmetic pass.
-      const neighbors = retrieveNeighbors(row, train, gt);
+      const neighbors = retrieveNeighbors(row, train, gt, opts);
       const family = row.hook_family as HookFamily;
       const familyFallback = !neighbors.some(
         (n) => n.hook_family === family && n.performance_score !== null,
@@ -421,12 +480,36 @@ async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2));
 
   const rows = await loadCorpus();
+
+  // Optional: score against description vectors built from different source
+  // text, to test whether embedding more of the vision output improves
+  // retrieval. Both sides of every comparison are swapped, because the eval
+  // uses the same column for the held-out query and the training rows — so
+  // the space stays internally consistent, exactly as it must in the app.
+  if (opts.embeddings) {
+    const override = JSON.parse(fs.readFileSync(opts.embeddings, 'utf8')) as Record<string, number[]>;
+    let swapped = 0;
+    for (const r of rows) {
+      const v = override[r.id];
+      if (v) {
+        r.descVec = v;
+        swapped++;
+      }
+    }
+    if (swapped !== rows.length) {
+      throw new Error(
+        `embedding override covers ${swapped}/${rows.length} rows. It must cover every row, ` +
+          `or the comparison mixes two embedding spaces and means nothing.`,
+      );
+    }
+    console.log(`description vectors: overridden from ${opts.embeddings} (${swapped} rows)`);
+  }
   const gt = opts.groundTruth;
   const eligible = rows.filter((r) => r[gt] !== null);
 
   console.log(`eval — ${eligible.length} of ${rows.length} rows scoreable, ` +
     `${FOLDS}-fold x ${opts.repeats} repeats, seed ${opts.seed}`);
-  console.log(`ground truth: ${gt}        funnel: top-${RPC_LIMIT} -> MMR(${FINAL_K}, lambda=${MMR_LAMBDA})`);
+  console.log(`ground truth: ${gt}        funnel: top-${opts.rpcLimit} -> MMR(${opts.finalK}, lambda=${opts.mmrLambda})`);
   console.log(`family blend: ${opts.blend}\n`);
 
   if (opts.sanity) {
