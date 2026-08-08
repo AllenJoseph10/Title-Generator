@@ -30,7 +30,19 @@ import type { HookFamily } from '../lib/hooks/taxonomy';
 
 const DEFAULT_SEED = 20260804;
 const FOLDS = 5;
-const REPEATS = 5;
+// Was 5. Raised to 25 on measurement: 5 repeats does not average out fold
+// partition noise, so the headline moved with the seed by more than any real
+// change would. Measured on the 259-row corpus, seeds 20260804/1/2:
+//
+//    5 repeats -> 0.263, 0.273, 0.235   (seed-to-seed range 0.038)
+//   25 repeats -> 0.261, 0.255, 0.250   (range 0.011)
+//   50 repeats -> 0.261, 0.256, 0.246   (range 0.015 — no better than 25)
+//
+// Convergence plateaus at 25; the residual ~0.01 is genuine and is negligible
+// beside the ~0.063 sampling SE at this corpus size. A default that needs a
+// flag to be trustworthy is not a default, so this is the shipped value —
+// a run costs nothing but time (embeddings are already in Postgres).
+const REPEATS = 25;
 const SLATES = 200;
 const SLATE_SIZE = 10;
 const MIN_FAMILY_N = 10;

@@ -208,38 +208,66 @@ things. Check 2 is the falsifiable one; check 1 is a regression guard.
 Both checks throw (non-zero exit) on failure; the main report never does — it
 is a measurement, not a gate.
 
-## Current numbers
+## THE BASELINE — compare future changes against this
 
-Run 2026-08-07, seed 20260804, **251-row corpus** (175 original + 76 from the
-under-performer backfill).
+Established 2026-08-08 on the **259-row corpus**, after the row-order defect
+below was fixed and `--repeats` was raised from 5 to 25. Produced by
+`npm run eval` with no flags. Takes ~10 seconds and costs nothing: every
+embedding is already in Postgres.
 
 ```
-
-eval — 245 of 251 rows scoreable, 5-fold x 5 repeats, seed 20260804
+eval — 253 of 259 rows scoreable, 5-fold x 25 repeats, seed 20260804
 ground truth: performance_score        funnel: top-30 -> MMR(8, lambda=0.6)
 family blend: 0
 
-Spearman (headline)      0.304 (fold-assignment spread 0.034 across 5 seeds)
-  sampling SE (n=245)   ~0.064
-  baseline: shuffled (1000 draws)          0.000 +/- 0.064
-  baseline: family term only (blend=1)     0.138 +/- 0.044
-  baseline: family mean (train, out-of-fold)  -0.194 +/- 0.081
-    permuted-family null (1000 draws)        -0.042 +/- 0.088   (observed is -1.73 SD from it — INSIDE the null)
-  baseline: family mean (in-sample, reference) 0.046 +/- 0.000
+Spearman (headline)      0.261 (fold-assignment spread 0.033 across 25 seeds)
+  sampling SE (n=253)   ~0.063
+  baseline: shuffled (5000 draws)         -0.001 +/- 0.064
+  baseline: family term only (blend=1)     0.166 +/- 0.036
+  baseline: family mean (train, out-of-fold)  -0.174 +/- 0.063
+    permuted-family null (5000 draws)        -0.051 +/- 0.085   (observed is -1.45 SD from it — INSIDE the null)
+  baseline: family mean (in-sample, reference) 0.054 +/- 0.000
 
-family term fallback: 10.4% of predictions
+family term fallback: 9.0% of predictions
 
-slate precision (10 candidates, 200 slates x 5 repeats)
-  @3   0.421 +/- 0.022   (random 0.300; shuffled null 0.301 +/- 0.227 per slate)
-  @5   0.594 +/- 0.020   (random 0.500; shuffled null 0.498 +/- 0.173 per slate)
+slate precision (10 candidates, 200 slates x 25 repeats)
+  @3   0.406 +/- 0.024   (random 0.300; shuffled null 0.299 +/- 0.232 per slate)
+  @5   0.578 +/- 0.018   (random 0.500; shuffled null 0.503 +/- 0.166 per slate)
 
 by hook family
-  transformation_tease    n=75    0.221
-  setup_trivial_reveal    n=63    0.277
-  relatable_pov           n=47    0.300
-  reaction_humblebrag     n=44    0.428
-  listicle_reveal         n=16    0.540
+  transformation_tease    n=75    0.196
+  setup_trivial_reveal    n=63    0.251
+  relatable_pov           n=54    0.288
+  reaction_humblebrag     n=44    0.345
+  listicle_reveal         n=17    0.515
 ```
+
+**Reproducible:** at 25 repeats the seed-to-seed range is **0.011** (0.261,
+0.255, 0.250 at seeds 20260804 / 1 / 2). At the old default of 5 it was 0.038.
+50 repeats is no better than 25 (range 0.015), so convergence has plateaued and
+the residual ~0.01 is genuine.
+
+### What size of change this harness can actually detect
+
+The two kinds of comparison have very different noise floors. Conflating them is
+how three invalid results were reported during the backfill.
+
+**Paired — a config change on the SAME corpus.** Prompt wording, funnel
+constants, family blend, MMR lambda, contrast thresholds. Sampling error largely
+cancels because both arms score identical rows, so the floor is partition noise,
+**~±0.011**. A shift of **0.02–0.03 is meaningful if it holds across several
+seeds**. This is how `FAMILY_PRIOR_BLEND` was settled — the evidence was a
+monotone ordering across four paired points, never a single pair.
+
+**Unpaired — a corpus change.** Adding creators or rows. `performance_score` is
+a corpus-relative percentile, so the ground truth is *redefined* and the
+**~±0.063** sampling SE applies in full without cancelling. **Changes below
+roughly 0.13 are not detectable this way at n=253.**
+
+Practical consequence: **use this harness to tune the system, not to prove the
+corpus improved.** Corpus growth should be justified on coverage — families
+clearing the n=10 floor, creators represented, performance range spanned — not
+on the headline moving.
 
 ### CORRECTION 2026-08-08 — earlier cross-import comparisons were invalid
 
@@ -463,7 +491,7 @@ Do not read it as validation that the 5-of-10 change works well in production.
 | Flag | Default | Purpose |
 |---|---|---|
 | `--seed <n>` | `20260804` | Reproducibility; also seeds the null draws and slate sampling |
-| `--repeats <n>` | `5` | Number of independent stratified 5-fold splits to average over |
+| `--repeats <n>` | `25` | Number of independent stratified 5-fold splits to average over |
 | `--ground-truth <col>` | `performance_score` | `view_outlier_score` runs the alternative ground truth |
 | `--family-blend <x>` | `0.3` | Weight on the family term in `computeTitlePrior`; `0` isolates neighbours, `1` gives family-term-only |
 | `--slate-size <n>` | `10` | Candidates per sampled slate for the precision@k metric |
