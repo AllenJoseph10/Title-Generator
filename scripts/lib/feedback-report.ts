@@ -24,9 +24,25 @@ export function renderFeedbackReport(rows: FeedbackRow[], generatedAt: string): 
   const kept = rows.filter((r) => r.vote === 1);
   const rejected = rows.filter((r) => r.vote === -1);
 
+  // Derived from the rows passed in, not `new Date()` — this function stays
+  // pure (rows in, Markdown out) so it is testable without a clock or a
+  // database, matching the rest of this module.
+  const dateRange =
+    rows.length === 0
+      ? null
+      : rows.reduce(
+          (range, r) => ({
+            earliest: r.createdAt < range.earliest ? r.createdAt : range.earliest,
+            latest: r.createdAt > range.latest ? r.createdAt : range.latest,
+          }),
+          { earliest: rows[0].createdAt, latest: rows[0].createdAt },
+        );
+
   const head = `# Title feedback — generated ${generatedAt}
 
-${kept.length} kept · ${rejected.length} rejected · ${rows.length} total
+${kept.length} kept · ${rejected.length} rejected · ${rows.length} total${
+    dateRange ? ` · ${dateRange.earliest} to ${dateRange.latest}` : ''
+  }
 
 Every vote a tester has cast, with the visual description each title was
 generated for. Kept titles also feed the creator's voice examples; rejected

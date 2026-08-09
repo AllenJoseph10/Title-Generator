@@ -42,6 +42,13 @@ describe('renderFeedbackReport', () => {
     expect(out).toContain('1 rejected');
   });
 
+  it('carries the vote date range in the header, derived from the rows not the clock', () => {
+    const out = renderFeedbackReport(rows, '2026-08-09T12:00:00Z');
+    // rows span 10:00:00Z (earliest) to 10:02:00Z (latest); generatedAt itself
+    // (12:00:00Z) must not leak into the range.
+    expect(out).toContain('2026-08-09T10:00:00Z to 2026-08-09T10:02:00Z');
+  });
+
   it('groups by creator and separates the two directions', () => {
     const out = renderFeedbackReport(rows, '2026-08-09T12:00:00Z');
     expect(out).toContain('## @henryjwade');
