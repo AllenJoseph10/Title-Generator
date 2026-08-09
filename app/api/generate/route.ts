@@ -111,7 +111,11 @@ export async function POST(req: NextRequest) {
       vision_provider: visionProvider,
       generation_provider: generationProvider,
       passcode_session_hash: sessHash,
-      creator_handle: body.creator_handle,
+      // Narrowed local, not the raw body: the pipeline call below retrieves
+      // and attributes with this same value, so a non-string client payload
+      // must not let the attempt row and the pipeline disagree on the key
+      // this feature partitions by.
+      creator_handle: creatorHandle,
     })
     .select('id')
     .single();

@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadEnvLocal, requireEnv } from './lib/load-env';
 import { renderFeedbackReport, type FeedbackRow } from './lib/feedback-report';
+import { displayTitles } from '../lib/generation/constants';
 
 const OUT = path.join('datasets', 'raw', '_title-feedback.md');
 
@@ -28,7 +29,16 @@ async function main() {
   const raw = (await res.json()) as any[];
   const rows: FeedbackRow[] = raw.flatMap((r) => {
     const gen = r.generations;
-    const picked = gen?.generated_titles?.[r.title_index];
+    // title_index indexes displayTitles(...) — sorted and sliced to 5 — the
+    // only order the client (and thus the vote) ever saw. Rows persisted
+    // before the ranking change landed are stored in model-emission order,
+    // so indexing the raw stored array here would attribute votes to the
+    // wrong titles for those rows.
+    const picked: { text: string; hookFamily: string } | undefined = gen?.generated_titles
+      ? displayTitles(
+          gen.generated_titles as Array<{ text: string; hookFamily: string; templateSimilarityPrior: number }>,
+        )[r.title_index]
+      : undefined;
     const vision = gen?.vision_description;
     const handle = gen?.generation_attempts?.creator_handle;
     if (!picked || !vision) return [];
