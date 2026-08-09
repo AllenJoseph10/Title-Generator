@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { performanceBand, buildUserMessage } from './generate';
+import { performanceBand, buildUserMessage, buildLikedBlock, buildRejectedBlock } from './generate';
 import type { CorpusTitle } from '../providers/types';
 
 // The exact heading, so these tests key on the new block rather than on prose
@@ -138,5 +138,51 @@ describe('buildUserMessage — contrast set', () => {
     });
     const idx = msg.indexOf(CONTRAST_HEADING);
     expect(idx === -1 || msg.indexOf('No data line') < idx).toBe(true);
+  });
+});
+
+describe('buildLikedBlock', () => {
+  const like = {
+    title: 'The coat that does all the work',
+    hookFamily: 'transformation_tease',
+    visualDescription: 'man in a wool overcoat on a city street at dusk',
+  };
+
+  it('is empty when there is nothing to show', () => {
+    expect(buildLikedBlock([])).toBe('');
+  });
+
+  it('renders the title, its family and the description it was written for', () => {
+    const out = buildLikedBlock([like]);
+    expect(out).toContain('## Titles this creator kept');
+    expect(out).toContain(like.title);
+    expect(out).toContain('transformation_tease');
+    expect(out).toContain('written for: man in a wool overcoat');
+  });
+
+  it('states these carry no performance data', () => {
+    // Load-bearing: without it the model cannot tell human approval from
+    // measured share rate, which is the conflation the corpus design avoids.
+    expect(buildLikedBlock([like]).toLowerCase()).toContain('no performance data');
+  });
+});
+
+describe('buildRejectedBlock', () => {
+  it('is empty when there is nothing to reject', () => {
+    expect(buildRejectedBlock([])).toBe('');
+  });
+
+  it('renders each rejected title under its own heading', () => {
+    const out = buildRejectedBlock(['a bad line', 'another bad line']);
+    expect(out).toContain('## Rejected for THIS video');
+    expect(out).toContain('- a bad line');
+    expect(out).toContain('- another bad line');
+  });
+
+  it('is not the corpus contrast block', () => {
+    // The contrast block claims its titles ranked near the bottom on share
+    // rate. Rejected suggestions were never posted, so they must not be
+    // filed under that claim.
+    expect(buildRejectedBlock(['x'])).not.toContain('share rate');
   });
 });

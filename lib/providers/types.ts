@@ -26,6 +26,14 @@ export type CorpusTitle = {
   performanceScore: number | null;
 };
 
+// A title a human kept, plus the video it was written for. Deliberately has no
+// performance score: it was never posted, so there is nothing to measure.
+export type LikedTitle = {
+  title: string;
+  hookFamily: string;
+  visualDescription: string;
+};
+
 export type GeneratedTitle = {
   text: string;
   hookFamily: HookFamily;
@@ -62,6 +70,8 @@ export type GenerateArgs = {
   styleFingerprint: string[];
   requiredFamilies: HookFamily[];
   steering?: string;
+  likedTitles?: LikedTitle[];
+  avoidTitles?: string[];
 };
 
 export interface GenerationProvider {
