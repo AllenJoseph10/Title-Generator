@@ -142,6 +142,7 @@ export async function POST(req: NextRequest) {
       visionProviderId: visionProvider,
       generationProviderId: generationProvider,
       steering,
+      creatorHandle: creatorHandle ?? '',
     });
   } catch (e) {
     const err = e as PipelineError | Error;
