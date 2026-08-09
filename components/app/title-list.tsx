@@ -21,7 +21,7 @@ const STRENGTH_TEXT: Record<Strength, string> = {
 type Props = {
   titles: Title[];
   generationId: string;
-  onDislikedChange?: (titles: string[]) => void;
+  onVote?: (titleText: string, vote: -1 | 1) => void;
 };
 
 export type TitleListHandle = {
@@ -30,7 +30,7 @@ export type TitleListHandle = {
 };
 
 export const TitleList = forwardRef<TitleListHandle, Props>(function TitleList(
-  { titles, generationId, onDislikedChange },
+  { titles, generationId, onVote: onVoteReported },
   ref,
 ) {
   const [copied, setCopied] = useState<number | null>(null);
@@ -46,14 +46,13 @@ export const TitleList = forwardRef<TitleListHandle, Props>(function TitleList(
   };
 
   const onVote = async (i: number, v: -1 | 1) => {
-    const next = { ...votes, [i]: v };
-    setVotes(next);
-    onDislikedChange?.(
-      Object.entries(next)
-        .filter(([, vote]) => vote === -1)
-        .map(([idx]) => titles[Number(idx)]?.text)
-        .filter((t): t is string => !!t),
-    );
+    setVotes((prev) => ({ ...prev, [i]: v }));
+    // Report the single vote event, not the accumulated set — the page owns
+    // accumulation across regenerates (keyed by title text, last vote wins),
+    // and re-deriving that from a per-index snapshot here would lose a
+    // reject made on an earlier generation once TitleList remounts.
+    const t = titles[i];
+    if (t) onVoteReported?.(t.text, v);
     const r = await fetch('/api/feedback', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

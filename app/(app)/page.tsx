@@ -30,7 +30,11 @@ export default function Page() {
   const [historyKey, setHistoryKey] = useState(0);
   const [historyId, setHistoryId] = useState<string | null>(null);
   const [lastSteering, setLastSteering] = useState<string>('');
-  const [avoidTitles, setAvoidTitles] = useState<string[]>([]);
+  // title text -> latest vote, across every generation of the current clip.
+  // Keying by text (not array index) and keeping only the latest vote is
+  // what makes a thumbs-up retract an earlier thumbs-down: a later vote on
+  // the same title just overwrites the entry instead of unioning forever.
+  const [votesByTitle, setVotesByTitle] = useState<Record<string, -1 | 1>>({});
   const [helpOpen, setHelpOpen] = useState(false);
   const titleListRef = useRef<TitleListHandle>(null);
   const objectUrlRef = useRef<string | null>(null);
@@ -47,7 +51,7 @@ export default function Page() {
     setStoragePath(null);
     setFilename(null);
     setLastSteering('');
-    setAvoidTitles([]);
+    setVotesByTitle({});
     if (objectUrlRef.current) {
       URL.revokeObjectURL(objectUrlRef.current);
       objectUrlRef.current = null;
@@ -119,6 +123,12 @@ export default function Page() {
       if (!storagePath) return;
       setBusy('generate');
       const clientRequestId = crypto.randomUUID();
+      // Derived at call time from the map, not stored separately — a stored
+      // array would need its own update path kept in sync with every vote,
+      // which is exactly the kind of drift that caused the original bug.
+      const avoidTitles = Object.entries(votesByTitle)
+        .filter(([, vote]) => vote === -1)
+        .map(([text]) => text);
       // Same reason as the upload calls: a network-level failure here rejects
       // rather than returning a response, and generation runs long enough that
       // a dropped connection is a realistic outcome.
@@ -154,7 +164,7 @@ export default function Page() {
       setHistoryKey((k) => k + 1);
       setBusy(null);
     },
-    [storagePath, avoidTitles],
+    [storagePath, votesByTitle],
   );
 
   const onLogout = async () => {
@@ -248,15 +258,17 @@ export default function Page() {
                     ref={titleListRef}
                     titles={result.titles}
                     generationId={result.id}
-                    // Accumulate rather than replace: TitleList remounts on
+                    // Vote-by-text, not vote-by-index: TitleList remounts on
                     // `key={result.id}` and loses its own vote state on
-                    // regenerate, so the first vote on the new set would
-                    // otherwise overwrite prior rejects instead of adding to
-                    // them — letting an earlier reject come back. `reset()`
-                    // clears this explicitly, and the server caps the list at
-                    // MAX_AVOID_TITLES regardless of how large it grows here.
-                    onDislikedChange={(next) =>
-                      setAvoidTitles((prev) => [...new Set([...prev, ...next])])
+                    // regenerate, so accumulation has to live here, keyed by
+                    // the title's text rather than its (regeneration-local)
+                    // index. Last vote on a given text wins, which is what
+                    // lets a thumbs-up retract an earlier thumbs-down instead
+                    // of the two coexisting. `reset()` clears this map on a
+                    // new video, and the server caps the sent list regardless
+                    // of how large it grows here.
+                    onVote={(titleText, vote) =>
+                      setVotesByTitle((prev) => ({ ...prev, [titleText]: vote }))
                     }
                   />
                   {result.visionDescription && (

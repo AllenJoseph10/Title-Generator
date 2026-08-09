@@ -204,8 +204,34 @@ characters, and the list truncated to the first 10. A malformed value degrades
 to an empty list rather than rejecting the request — a bad avoid list should not
 cost the user their generation.
 
-`TitleList` reports its disliked title texts upward via a callback so the page
-can pass them on regenerate. The component keeps owning its own vote state.
+`TitleList` reports its votes upward via a callback so the page can pass
+rejections on regenerate. The component keeps owning its own vote state — the
+callback carries a single vote event (`titleText`, `vote`), not the whole
+disliked set, so the page decides what accumulation means rather than
+inheriting whatever shape TitleList's per-generation index state happens to
+produce.
+
+#### Accumulation across regenerates
+
+Left unresolved, this is exactly how the retraction bug happened: a creator
+regenerates a clip several times, thumbs-down a title, then reconsiders and
+thumbs-up the same text once a later regenerate reproduces it. The vote must
+retract the earlier rejection — otherwise the next prompt asserts both "this
+creator kept this" and "the creator rejected this" about the same title,
+which is a contradiction, not a stronger signal.
+
+The decision: rejections accumulate for the lifetime of the clip currently on
+screen, keyed by **title text**, with the **last vote wins**. The page holds
+`Record<title text, -1 | 1>`, not an array. A thumbs-down inserts `-1`; a
+later thumbs-up on that same text overwrites it, which is what makes the
+correction possible at all — an append-only union can only ever add, never
+retract. Text is the key rather than array index because `TitleList` remounts
+on every regenerate (`key={result.id}`) and starts a fresh index space each
+time; the same title can land at a different index next generation, and
+index-keyed accumulation would silently stop matching it. The map is cleared
+exactly where the old `avoidTitles` array was — in `reset()`, when the
+creator picks a new video — because the clip, not the session, is the scope
+of "rejected for THIS video."
 
 ---
 
