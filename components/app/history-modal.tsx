@@ -69,7 +69,10 @@ export function HistoryModal({ generationId, onClose }: Props) {
                   {data.createdAt ? new Date(data.createdAt).toLocaleString() : ''}
                 </p>
               </div>
-              {data.titles && <TitleList titles={data.titles} generationId={data.id} />}
+              {/* Keyed on the generation: without it, vote state from a
+                  previously viewed history entry leaks into this one and
+                  thumbs render highlighted on the wrong titles. */}
+              {data.titles && <TitleList key={data.id} titles={data.titles} generationId={data.id} />}
               {data.visionDescription && (
                 <div className="mt-4">
                   <VisionSummary vision={data.visionDescription} />

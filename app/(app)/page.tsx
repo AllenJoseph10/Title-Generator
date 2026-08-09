@@ -248,7 +248,16 @@ export default function Page() {
                     ref={titleListRef}
                     titles={result.titles}
                     generationId={result.id}
-                    onDislikedChange={setAvoidTitles}
+                    // Accumulate rather than replace: TitleList remounts on
+                    // `key={result.id}` and loses its own vote state on
+                    // regenerate, so the first vote on the new set would
+                    // otherwise overwrite prior rejects instead of adding to
+                    // them — letting an earlier reject come back. `reset()`
+                    // clears this explicitly, and the server caps the list at
+                    // MAX_AVOID_TITLES regardless of how large it grows here.
+                    onDislikedChange={(next) =>
+                      setAvoidTitles((prev) => [...new Set([...prev, ...next])])
+                    }
                   />
                   {result.visionDescription && (
                     <VisionSummary vision={result.visionDescription} />
