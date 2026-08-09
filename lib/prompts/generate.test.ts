@@ -186,3 +186,58 @@ describe('buildRejectedBlock', () => {
     expect(buildRejectedBlock(['x'])).not.toContain('share rate');
   });
 });
+
+describe('buildUserMessage — block spacing', () => {
+  // Each of likedBlock/contrastBlock/rejectedBlock already supplies its own
+  // leading blank line when non-empty and contributes nothing when empty, so
+  // the template must join them with no literal newlines of its own —
+  // otherwise every empty block still adds a blank line, and every non-empty
+  // one adds an extra one on top of its own.
+  //
+  // A bare "never \n{3}" check does not hold here: the fixed instructional
+  // line above the blocks ends in its own \n, and the first non-empty block's
+  // leading \n\n lands right after it, so one run of exactly 3 newlines
+  // before the first heading is correct, pre-existing behavior — it is what
+  // contrastBlock alone already produced before this task touched the file.
+  // The two checks below instead bound the actual defect: a run of 4+ can
+  // only come from a literal template newline stacked on top of a block's own
+  // leading blank, and more than one run of >=3 can only come from doing that
+  // at more than one block boundary.
+  const base = {
+    description: {
+      scene: 'a man walks',
+      subject: 'a man',
+      setting: 'a street',
+      vibe: ['calm'],
+      visualHook: 'he turns',
+      rawJson: null,
+    },
+    requiredFamilies: ['relatable_pov' as const],
+  };
+
+  it('never emits a run of 4+ newlines when no feedback blocks apply', () => {
+    const msg = buildUserMessage({
+      ...base,
+      retrievedExamples: [ex('A line', 0.5)],
+    });
+    expect(msg).not.toMatch(/\n{4,}/);
+  });
+
+  it('never stacks more than one triple-newline run with liked, contrast and rejected all populated', () => {
+    const msg = buildUserMessage({
+      ...base,
+      retrievedExamples: [ex('Winner line', 0.95), ex('Flop line', 0.05)],
+      likedTitles: [
+        {
+          title: 'The coat that does all the work',
+          hookFamily: 'transformation_tease',
+          visualDescription: 'man in a wool overcoat on a city street at dusk',
+        },
+      ],
+      avoidTitles: ['a bad line'],
+    });
+    // Exactly one run of >=3 is legitimate: the gap before the first new
+    // block's heading, inherited unchanged from the pre-task-3 design.
+    expect((msg.match(/\n{3,}/g) ?? []).length).toBe(1);
+  });
+});

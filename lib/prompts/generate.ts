@@ -129,9 +129,7 @@ ${contrast.map((e) => `- [${e.hookFamily}, ${performanceBand(e.performanceScore)
 Each is tagged with its hook family and how it ranked on share rate across the corpus. A smaller "top N%" performed better, so weight those patterns more heavily. "unmeasured" means no share data exists for that row — draw no conclusion from it either way. Titles that clearly underperformed are not listed here; they appear in their own section below.
 ${examples}
 Do not carry a specific quantity, price, brand, or proper noun from a retrieved example into a new title unless the video description above actually supports it. You are free to invent your own number when the video genuinely shows a countable set.
-${likedBlock}
-${contrastBlock}
-${rejectedBlock}
+${likedBlock}${contrastBlock}${rejectedBlock}
 
 ## REQUIRED hook families (you MUST include at least one title for each)
 ${args.requiredFamilies.map((f) => `- ${f}`).join('\n')}
