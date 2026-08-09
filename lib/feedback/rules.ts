@@ -17,6 +17,11 @@ export function sanitizeAvoidTitles(input: unknown): string[] {
     .filter((t): t is string => typeof t === 'string')
     .map((t) => t.trim())
     .filter((t) => t.length > 0)
+    // Collapsed BEFORE the length cap, and before it ever reaches
+    // buildRejectedBlock: a newline surviving into that block lets a single
+    // entry forge a second "## Titles ..." heading and mimic a measured-
+    // performance claim for text nobody has ever posted or scored.
+    .map((t) => t.replace(/\s+/g, ' '))
     .map((t) => t.slice(0, MAX_AVOID_LENGTH))
     .slice(0, MAX_AVOID_TITLES);
 }
