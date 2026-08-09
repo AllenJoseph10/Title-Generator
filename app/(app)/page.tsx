@@ -235,7 +235,11 @@ export default function Page() {
                   <div className="flex items-center justify-between gap-3 flex-wrap">
                     <div className="flex items-center gap-3 flex-wrap min-w-0">
                       <p className="font-mono text-xs text-ink-muted tabular-nums">
-                        {result.titles.length} titles · ${result.costUsd?.toFixed(4) ?? '–'} ·{' '}
+                        {/* No cost here — what a generation costs is the
+                            operator's concern, not the creator's. It is still
+                            returned by the API and stored, so cost tracking is
+                            unaffected. */}
+                        {result.titles.length} titles ·{' '}
                         {result.durationMs ? `${(result.durationMs / 1000).toFixed(1)}s` : '–'}
                         {result.idempotent ? ' · cached' : ''}
                       </p>
