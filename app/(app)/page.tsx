@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Sparkles, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
+import { DashboardGuide } from '@/components/app/dashboard-guide';
 import { UploadDropzone } from '@/components/app/upload-dropzone';
 import { VideoPanel, VisionSummary } from '@/components/app/video-panel';
 import { ProcessingPanel } from '@/components/app/processing';
@@ -214,6 +215,7 @@ export default function Page() {
       <main className="container flex-1 py-8">
         {!videoUrl ? (
           <div className="max-w-2xl mx-auto pt-8">
+            <DashboardGuide />
             <UploadDropzone onFile={upload} busy={!!busy} />
           </div>
         ) : (
