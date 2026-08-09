@@ -244,6 +244,7 @@ export default function Page() {
                   </div>
                   <Separator />
                   <TitleList
+                    key={result.id}
                     ref={titleListRef}
                     titles={result.titles}
                     generationId={result.id}
