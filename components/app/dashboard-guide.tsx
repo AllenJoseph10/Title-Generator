@@ -4,6 +4,10 @@ import { Globe, Sparkles, ThumbsUp } from 'lucide-react';
 // floor, that the arrow beside Regenerate is a menu at all, and that the vote
 // buttons have different scopes. Everything else on this screen explains itself.
 //
+// Kept to a single short line of copy each. This sits above the dropzone, so
+// every line it grows pushes the thing people actually came here to use further
+// down the page — the guide is a caption, not a section.
+//
 // The icons deliberately match the ones on the controls they describe —
 // Sparkles is the Regenerate button, ThumbsUp is the vote control — so the
 // reader can map each line to something they will actually see.
@@ -11,36 +15,36 @@ const ITEMS = [
   {
     icon: Globe,
     label: 'Browsers',
-    body: 'Works in a current Chrome, Edge, Safari or Firefox. Clips over 50 MB are shrunk in the browser before upload, which needs Safari 16.4 or later, or Firefox 130 or later.',
+    body: 'Current Chrome, Edge, Safari or Firefox. Shrinking clips over 50 MB needs Safari 16.4+ or Firefox 130+.',
   },
   {
     icon: Sparkles,
-    label: 'Regenerate modes',
-    body: 'The arrow beside Regenerate opens five directions — more visceral, more contrarian, fresher angles, shorter and punchier, or more mystery. Each one re-runs the same clip with that direction applied to every title.',
+    label: 'Regenerate',
+    body: 'The arrow beside Regenerate re-runs the clip five ways: visceral, contrarian, fresher, shorter, mystery.',
   },
   {
     icon: ThumbsUp,
-    label: 'Like and dislike',
-    body: 'Dislike keeps a title out of the next regenerate for the clip you are on. Like is remembered for the creator, and shapes titles on later clips that look similar.',
+    label: 'Like / dislike',
+    body: "Dislike drops a title from this clip's next regenerate. Like is remembered for the creator.",
   },
 ];
 
 export function DashboardGuide() {
   return (
+    // gap-px over a border-coloured background draws the hairlines between
+    // cells, and collapses to horizontal rules when this stacks on mobile —
+    // which divide-x cannot do.
     <section
       aria-label="Before you start"
-      className="mb-8 divide-y divide-border rounded-md border border-border bg-bg-raised/50"
+      className="grid gap-px overflow-hidden rounded-md border border-border bg-border sm:grid-cols-3"
     >
       {ITEMS.map(({ icon: Icon, label, body }) => (
-        <div
-          key={label}
-          className="grid grid-cols-1 gap-1.5 px-5 py-4 sm:grid-cols-[170px_1fr] sm:gap-5"
-        >
-          <p className="flex items-center gap-2 text-micro uppercase tracking-[0.12em] text-ink-muted">
-            <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
+        <div key={label} className="flex flex-col gap-1.5 bg-bg-raised px-4 py-3">
+          <p className="flex items-center gap-1.5 text-micro uppercase tracking-[0.1em] text-ink-muted">
+            <Icon className="h-3 w-3 shrink-0" strokeWidth={1.5} />
             {label}
           </p>
-          <p className="text-sm text-ink-dim text-balance">{body}</p>
+          <p className="text-xs leading-relaxed text-ink-dim">{body}</p>
         </div>
       ))}
     </section>

@@ -212,11 +212,16 @@ export default function Page() {
         </div>
       </header>
 
-      <main className="container flex-1 py-8">
+      <main className="container flex flex-1 flex-col py-8">
         {!videoUrl ? (
-          <div className="max-w-2xl mx-auto pt-8">
+          // The guide sits at the top and the dropzone takes the rest, so it
+          // lands near the middle of the viewport instead of being pushed to the
+          // bottom by whatever the guide happens to say.
+          <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col">
             <DashboardGuide />
-            <UploadDropzone onFile={upload} busy={!!busy} />
+            <div className="flex flex-1 flex-col justify-center py-6">
+              <UploadDropzone onFile={upload} busy={!!busy} />
+            </div>
           </div>
         ) : (
           // Keyed on the clip so picking a different video replays the entrance.
