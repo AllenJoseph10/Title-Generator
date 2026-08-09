@@ -4,6 +4,7 @@ import { BUCKET } from '@/lib/storage/constants';
 import { SESSION_COOKIE, verifySession, sessionHash } from '@/lib/auth/passcode';
 import { runPipeline, PipelineError, type PipelineResult } from '@/lib/generation/orchestrator';
 import { displayTitles } from '@/lib/generation/constants';
+import { sanitizeAvoidTitles } from '@/lib/feedback/rules';
 import type { ProviderId } from '@/lib/providers/types';
 
 export const runtime = 'nodejs';
@@ -19,6 +20,7 @@ type Body = {
   vision_provider?: unknown;
   generation_provider?: unknown;
   steering?: unknown;
+  avoid_titles?: unknown;
 };
 
 export async function POST(req: NextRequest) {
@@ -109,6 +111,7 @@ export async function POST(req: NextRequest) {
       vision_provider: visionProvider,
       generation_provider: generationProvider,
       passcode_session_hash: sessHash,
+      creator_handle: body.creator_handle,
     })
     .select('id')
     .single();
@@ -143,6 +146,7 @@ export async function POST(req: NextRequest) {
       generationProviderId: generationProvider,
       steering,
       creatorHandle: creatorHandle ?? '',
+      avoidTitles: sanitizeAvoidTitles(body.avoid_titles),
     });
   } catch (e) {
     const err = e as PipelineError | Error;

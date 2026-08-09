@@ -111,12 +111,16 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
 
   // A failure here must not cost the user their generation: kept titles are a
   // nudge, and the corpus examples above are the real signal.
-  const likedTitles = await matchLikedTitles(input.creatorHandle, queryEmbed.vector).catch(
-    (e: Error) => {
-      console.warn(`liked retrieve failed, continuing without: ${e.message}`);
-      return [];
-    },
-  );
+  //
+  // No creator handle means no per-creator voice to retrieve: skip the query
+  // rather than looking up creator_handle = '', which would otherwise match
+  // every other handle-less generation's liked titles against each other.
+  const likedTitles = input.creatorHandle
+    ? await matchLikedTitles(input.creatorHandle, queryEmbed.vector).catch((e: Error) => {
+        console.warn(`liked retrieve failed, continuing without: ${e.message}`);
+        return [];
+      })
+    : [];
 
   // Which hook families the generator must cover, derived from the videos
   // retrieval actually found similar. This runs after retrieval by necessity:
