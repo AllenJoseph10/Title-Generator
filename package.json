@@ -17,6 +17,7 @@
     "refresh:metrics": "tsx scripts/refresh-metrics.ts",
     "collect:shares": "tsx scripts/collect-shares.ts",
     "verify:retrieval": "tsx --conditions=react-server scripts/verify-retrieval.ts",
+    "review:feedback": "tsx scripts/review-feedback.ts",
     "eval": "tsx scripts/eval.ts"
   },
   "dependencies": {
