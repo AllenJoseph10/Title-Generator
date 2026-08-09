@@ -21,6 +21,7 @@ const STRENGTH_TEXT: Record<Strength, string> = {
 type Props = {
   titles: Title[];
   generationId: string;
+  onDislikedChange?: (titles: string[]) => void;
 };
 
 export type TitleListHandle = {
@@ -29,7 +30,7 @@ export type TitleListHandle = {
 };
 
 export const TitleList = forwardRef<TitleListHandle, Props>(function TitleList(
-  { titles, generationId },
+  { titles, generationId, onDislikedChange },
   ref,
 ) {
   const [copied, setCopied] = useState<number | null>(null);
@@ -45,7 +46,14 @@ export const TitleList = forwardRef<TitleListHandle, Props>(function TitleList(
   };
 
   const onVote = async (i: number, v: -1 | 1) => {
-    setVotes((prev) => ({ ...prev, [i]: v }));
+    const next = { ...votes, [i]: v };
+    setVotes(next);
+    onDislikedChange?.(
+      Object.entries(next)
+        .filter(([, vote]) => vote === -1)
+        .map(([idx]) => titles[Number(idx)]?.text)
+        .filter((t): t is string => !!t),
+    );
     const r = await fetch('/api/feedback', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

@@ -30,6 +30,7 @@ export default function Page() {
   const [historyKey, setHistoryKey] = useState(0);
   const [historyId, setHistoryId] = useState<string | null>(null);
   const [lastSteering, setLastSteering] = useState<string>('');
+  const [avoidTitles, setAvoidTitles] = useState<string[]>([]);
   const [helpOpen, setHelpOpen] = useState(false);
   const titleListRef = useRef<TitleListHandle>(null);
   const objectUrlRef = useRef<string | null>(null);
@@ -46,6 +47,7 @@ export default function Page() {
     setStoragePath(null);
     setFilename(null);
     setLastSteering('');
+    setAvoidTitles([]);
     if (objectUrlRef.current) {
       URL.revokeObjectURL(objectUrlRef.current);
       objectUrlRef.current = null;
@@ -131,6 +133,7 @@ export default function Page() {
             niche_id: 'luxury-menswear',
             creator_handle: 'william_j_wade',
             steering: steering || undefined,
+            avoid_titles: avoidTitles,
             vision_provider: PROVIDER,
             generation_provider: PROVIDER,
           }),
@@ -151,7 +154,7 @@ export default function Page() {
       setHistoryKey((k) => k + 1);
       setBusy(null);
     },
-    [storagePath],
+    [storagePath, avoidTitles],
   );
 
   const onLogout = async () => {
@@ -244,6 +247,7 @@ export default function Page() {
                     ref={titleListRef}
                     titles={result.titles}
                     generationId={result.id}
+                    onDislikedChange={setAvoidTitles}
                   />
                   {result.visionDescription && (
                     <VisionSummary vision={result.visionDescription} />
