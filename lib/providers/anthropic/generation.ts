@@ -65,6 +65,8 @@ export const anthropicGeneration: GenerationProvider = {
       description: args.description,
       retrievedExamples: args.retrievedExamples,
       requiredFamilies: args.requiredFamilies,
+      likedTitles: args.likedTitles,
+      avoidTitles: args.avoidTitles,
     });
     if (args.steering && args.steering.trim().length > 0) {
       userText += `\n\nAdditional creative direction (apply to ALL 10 titles): ${args.steering.trim().slice(0, 300)}`;
