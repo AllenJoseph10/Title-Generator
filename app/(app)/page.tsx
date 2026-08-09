@@ -29,7 +29,6 @@ export default function Page() {
   const [result, setResult] = useState<GenerateResponse | null>(null);
   const [historyKey, setHistoryKey] = useState(0);
   const [historyId, setHistoryId] = useState<string | null>(null);
-  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
   const [lastSteering, setLastSteering] = useState<string>('');
   const [helpOpen, setHelpOpen] = useState(false);
   const titleListRef = useRef<TitleListHandle>(null);
@@ -52,7 +51,6 @@ export default function Page() {
       objectUrlRef.current = null;
     }
     setVideoUrl(null);
-    setVideoEl(null);
   };
 
   const upload = useCallback(async (file: File) => {
@@ -64,11 +62,24 @@ export default function Page() {
     objectUrlRef.current = URL.createObjectURL(file);
     setVideoUrl(objectUrlRef.current);
 
-    const signRes = await fetch('/api/upload-url', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ filename: file.name, mime: file.type, size: file.size }),
-    });
+    // Both calls are wrapped because `fetch` rejects with a bare
+    // `TypeError: Failed to fetch` on any network-level failure — dropped
+    // connection, CORS, an unreachable storage host. Unwrapped, that escaped
+    // this callback as an unhandled rejection: the app crashed to the error
+    // overlay and `busy` stayed stuck on 'upload', wedging the UI. Naming the
+    // stage in the message is what makes the next occurrence diagnosable.
+    let signRes: Response;
+    try {
+      signRes = await fetch('/api/upload-url', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ filename: file.name, mime: file.type, size: file.size }),
+      });
+    } catch {
+      toast.error('Could not reach the server to start the upload. Check your connection.');
+      setBusy(null);
+      return;
+    }
     if (!signRes.ok) {
       const j = (await signRes.json().catch(() => ({}))) as { error?: string };
       toast.error(j.error ?? `upload-url failed (${signRes.status})`);
@@ -80,11 +91,18 @@ export default function Page() {
       storagePath: string;
     };
 
-    const putRes = await fetch(signedUrl, {
-      method: 'PUT',
-      headers: { 'content-type': file.type },
-      body: file,
-    });
+    let putRes: Response;
+    try {
+      putRes = await fetch(signedUrl, {
+        method: 'PUT',
+        headers: { 'content-type': file.type },
+        body: file,
+      });
+    } catch {
+      toast.error('Upload to storage failed before it completed. Try again.');
+      setBusy(null);
+      return;
+    }
     if (!putRes.ok) {
       toast.error(`Upload failed (${putRes.status})`);
       setBusy(null);
@@ -99,20 +117,30 @@ export default function Page() {
       if (!storagePath) return;
       setBusy('generate');
       const clientRequestId = crypto.randomUUID();
-      const res = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          client_request_id: clientRequestId,
-          storage_path: storagePath,
-          niche_id: 'luxury-menswear',
-          creator_handle: 'william_j_wade',
-          steering: steering || undefined,
-          vision_provider: PROVIDER,
-          generation_provider: PROVIDER,
-        }),
-      });
-      const json = await res.json();
+      // Same reason as the upload calls: a network-level failure here rejects
+      // rather than returning a response, and generation runs long enough that
+      // a dropped connection is a realistic outcome.
+      let res: Response;
+      try {
+        res = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            client_request_id: clientRequestId,
+            storage_path: storagePath,
+            niche_id: 'luxury-menswear',
+            creator_handle: 'william_j_wade',
+            steering: steering || undefined,
+            vision_provider: PROVIDER,
+            generation_provider: PROVIDER,
+          }),
+        });
+      } catch {
+        toast.error('Lost the connection while generating. Nothing was charged twice — try again.');
+        setBusy(null);
+        return;
+      }
+      const json = await res.json().catch(() => ({}) as { error?: string });
       if (!res.ok) {
         toast.error(json.error ?? `Generate failed (${res.status})`);
         setBusy(null);
@@ -182,11 +210,7 @@ export default function Page() {
             className="grid grid-cols-1 lg:grid-cols-[minmax(0,400px)_1fr] gap-8 lg:gap-16"
           >
             <div className="animate-panel-in">
-              <VideoPanel
-                videoUrl={videoUrl}
-                filename={filename ?? undefined}
-                onVideoMount={setVideoEl}
-              />
+              <VideoPanel videoUrl={videoUrl} filename={filename ?? undefined} />
             </div>
 
             <div
@@ -220,7 +244,6 @@ export default function Page() {
                     ref={titleListRef}
                     titles={result.titles}
                     generationId={result.id}
-                    videoEl={videoEl}
                   />
                   {result.visionDescription && (
                     <VisionSummary vision={result.visionDescription} />

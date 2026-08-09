@@ -8,13 +8,12 @@ import type { VisionDescription } from './types';
 type Props = {
   videoUrl: string;
   filename?: string;
-  onVideoMount?: (el: HTMLVideoElement | null) => void;
 };
 
 // The left column is the clip and nothing else. Everything written about the
 // clip — what the model saw, the controls, the titles — lives in the right
 // column, so the two sides read as "the video" and "what we did with it".
-export function VideoPanel({ videoUrl, filename, onVideoMount }: Props) {
+export function VideoPanel({ videoUrl, filename }: Props) {
   return (
     // The wrapper shrinks to the clip's width so the caption sits directly
     // under the video. Previously the video was centred in the column while the
@@ -31,7 +30,6 @@ export function VideoPanel({ videoUrl, filename, onVideoMount }: Props) {
           controls
           playsInline
           crossOrigin="anonymous"
-          ref={onVideoMount}
           className="h-full w-full object-contain"
         />
       </div>

@@ -38,8 +38,3 @@ export function priorBucket(p: number): Strength {
   return 'low';
 }
 
-export const STRENGTH_VARIANT = {
-  high: 'positive',
-  med: 'warning',
-  low: 'neutral',
-} as const;
