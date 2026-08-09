@@ -16,6 +16,13 @@ import { TRIM_SEC, scaleToTarget, needsWork } from './video-geometry';
 // The server samples at 0.5fps, so it can only ever see 8 of these frames.
 // 15fps is far more than it consumes while keeping the encode short — a 16s
 // clip is 240 frames rather than 480.
+//
+// MEASURED 2026-08-09, on a 1080x1920 22s clip: dropping this to 8 (240 seeks
+// -> 128) changed preparation from 10.94s to 10.47s. Frame count is NOT the
+// bottleneck — each seek forces a decode forward from the previous keyframe, so
+// total decode work tracks the clip's duration rather than how many frames are
+// sampled from it. Lowering FPS only costs preview smoothness. Do not "optimise"
+// this number again without measuring.
 const FPS = 15;
 const BITRATE = 2_000_000; // 2 Mbps at 720p is ample for 8 sampled stills.
 const CODEC = 'avc1.42001f'; // H.264 baseline, level 3.1.

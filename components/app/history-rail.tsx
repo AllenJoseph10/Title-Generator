@@ -28,19 +28,13 @@ export function HistoryRail({ onSelect, refreshKey }: Props) {
     };
   }, [refreshKey]);
 
-  if (items === null) {
-    return <div className="h-24 animate-pulse bg-bg-raised/40 rounded-md" />;
-  }
-  if (items.length === 0) {
-    return (
-      <p className="text-xs text-ink-muted py-4 italic">
-        Your past generations will appear here.
-      </p>
-    );
-  }
+  // The rail owns its own divider so that an empty history leaves no trace —
+  // a separator with nothing under it reads as a broken section.
+  if (items === null) return null;
+  if (items.length === 0) return null;
 
   return (
-    <div className="space-y-2">
+    <div className="mt-16 space-y-2 border-t border-border pt-6">
       <div className="flex items-center gap-2 text-micro uppercase tracking-[0.12em] text-ink-muted">
         <Clock className="h-3 w-3" />
         Recent
