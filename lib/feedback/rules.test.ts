@@ -13,7 +13,7 @@ describe('sanitizeAvoidTitles', () => {
 
   it('keeps only the first 10 entries', () => {
     const many = Array.from({ length: 25 }, (_, i) => `t${i}`);
-    expect(sanitizeAvoidTitles(many)).toHaveLength(10);
+    expect(sanitizeAvoidTitles(many)).toEqual(many.slice(0, 10));
   });
 
   it('degrades to an empty list rather than throwing', () => {
