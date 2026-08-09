@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Sparkles, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
+import { DashboardGuide } from '@/components/app/dashboard-guide';
 import { UploadDropzone } from '@/components/app/upload-dropzone';
 import { VideoPanel, VisionSummary } from '@/components/app/video-panel';
 import { ProcessingPanel } from '@/components/app/processing';
@@ -30,6 +31,11 @@ export default function Page() {
   const [historyKey, setHistoryKey] = useState(0);
   const [historyId, setHistoryId] = useState<string | null>(null);
   const [lastSteering, setLastSteering] = useState<string>('');
+  // title text -> latest vote, across every generation of the current clip.
+  // Keying by text (not array index) and keeping only the latest vote is
+  // what makes a thumbs-up retract an earlier thumbs-down: a later vote on
+  // the same title just overwrites the entry instead of unioning forever.
+  const [votesByTitle, setVotesByTitle] = useState<Record<string, -1 | 1>>({});
   const [helpOpen, setHelpOpen] = useState(false);
   const titleListRef = useRef<TitleListHandle>(null);
   const objectUrlRef = useRef<string | null>(null);
@@ -46,6 +52,7 @@ export default function Page() {
     setStoragePath(null);
     setFilename(null);
     setLastSteering('');
+    setVotesByTitle({});
     if (objectUrlRef.current) {
       URL.revokeObjectURL(objectUrlRef.current);
       objectUrlRef.current = null;
@@ -117,6 +124,12 @@ export default function Page() {
       if (!storagePath) return;
       setBusy('generate');
       const clientRequestId = crypto.randomUUID();
+      // Derived at call time from the map, not stored separately — a stored
+      // array would need its own update path kept in sync with every vote,
+      // which is exactly the kind of drift that caused the original bug.
+      const avoidTitles = Object.entries(votesByTitle)
+        .filter(([, vote]) => vote === -1)
+        .map(([text]) => text);
       // Same reason as the upload calls: a network-level failure here rejects
       // rather than returning a response, and generation runs long enough that
       // a dropped connection is a realistic outcome.
@@ -131,6 +144,7 @@ export default function Page() {
             niche_id: 'luxury-menswear',
             creator_handle: 'william_j_wade',
             steering: steering || undefined,
+            avoid_titles: avoidTitles,
             vision_provider: PROVIDER,
             generation_provider: PROVIDER,
           }),
@@ -151,7 +165,7 @@ export default function Page() {
       setHistoryKey((k) => k + 1);
       setBusy(null);
     },
-    [storagePath],
+    [storagePath, votesByTitle],
   );
 
   const onLogout = async () => {
@@ -198,10 +212,16 @@ export default function Page() {
         </div>
       </header>
 
-      <main className="container flex-1 py-8">
+      <main className="container flex flex-1 flex-col py-8">
         {!videoUrl ? (
-          <div className="max-w-2xl mx-auto pt-8">
-            <UploadDropzone onFile={upload} busy={!!busy} />
+          // The guide sits at the top and the dropzone takes the rest, so it
+          // lands near the middle of the viewport instead of being pushed to the
+          // bottom by whatever the guide happens to say.
+          <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col">
+            <DashboardGuide />
+            <div className="flex flex-1 flex-col justify-center py-6">
+              <UploadDropzone onFile={upload} busy={!!busy} />
+            </div>
           </div>
         ) : (
           // Keyed on the clip so picking a different video replays the entrance.
@@ -222,7 +242,11 @@ export default function Page() {
                   <div className="flex items-center justify-between gap-3 flex-wrap">
                     <div className="flex items-center gap-3 flex-wrap min-w-0">
                       <p className="font-mono text-xs text-ink-muted tabular-nums">
-                        {result.titles.length} titles · ${result.costUsd?.toFixed(4) ?? '–'} ·{' '}
+                        {/* No cost here — what a generation costs is the
+                            operator's concern, not the creator's. It is still
+                            returned by the API and stored, so cost tracking is
+                            unaffected. */}
+                        {result.titles.length} titles ·{' '}
                         {result.durationMs ? `${(result.durationMs / 1000).toFixed(1)}s` : '–'}
                         {result.idempotent ? ' · cached' : ''}
                       </p>
@@ -241,9 +265,22 @@ export default function Page() {
                   </div>
                   <Separator />
                   <TitleList
+                    key={result.id}
                     ref={titleListRef}
                     titles={result.titles}
                     generationId={result.id}
+                    // Vote-by-text, not vote-by-index: TitleList remounts on
+                    // `key={result.id}` and loses its own vote state on
+                    // regenerate, so accumulation has to live here, keyed by
+                    // the title's text rather than its (regeneration-local)
+                    // index. Last vote on a given text wins, which is what
+                    // lets a thumbs-up retract an earlier thumbs-down instead
+                    // of the two coexisting. `reset()` clears this map on a
+                    // new video, and the server caps the sent list regardless
+                    // of how large it grows here.
+                    onVote={(titleText, vote) =>
+                      setVotesByTitle((prev) => ({ ...prev, [titleText]: vote }))
+                    }
                   />
                   {result.visionDescription && (
                     <VisionSummary vision={result.visionDescription} />

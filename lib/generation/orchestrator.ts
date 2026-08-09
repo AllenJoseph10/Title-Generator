@@ -17,6 +17,7 @@ import { openaiGeneration } from '@/lib/providers/openai/generation';
 import { embed, embedMany } from '@/lib/providers/openai/embedding';
 import { retrieveAndRerank } from '@/lib/retrieval/search';
 import { computeTitlePrior } from '@/lib/retrieval/prior';
+import { matchLikedTitles } from '@/lib/retrieval/liked';
 
 const MAX_DURATION_SEC = 60;
 const TARGET_FRAMES = 8;
@@ -57,6 +58,8 @@ export type PipelineInput = {
   visionProviderId: ProviderId;
   generationProviderId: ProviderId;
   steering?: string;
+  creatorHandle: string;
+  avoidTitles?: string[];
 };
 
 export type PipelineResult = {
@@ -106,6 +109,19 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
     throw new PipelineError('vision', `retrieve: ${e.message}`);
   });
 
+  // A failure here must not cost the user their generation: kept titles are a
+  // nudge, and the corpus examples above are the real signal.
+  //
+  // No creator handle means no per-creator voice to retrieve: skip the query
+  // rather than looking up creator_handle = '', which would otherwise match
+  // every other handle-less generation's liked titles against each other.
+  const likedTitles = input.creatorHandle
+    ? await matchLikedTitles(input.creatorHandle, queryEmbed.vector).catch((e: Error) => {
+        console.warn(`liked retrieve failed, continuing without: ${e.message}`);
+        return [];
+      })
+    : [];
+
   // Which hook families the generator must cover, derived from the videos
   // retrieval actually found similar. This runs after retrieval by necessity:
   // it reads the neighbours' labels.
@@ -129,6 +145,8 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineResult>
       styleFingerprint: input.styleFingerprint,
       requiredFamilies,
       steering: input.steering,
+      likedTitles,
+      avoidTitles: input.avoidTitles,
     })
     .catch((e: Error) => {
       throw new PipelineError('generate', e.message);

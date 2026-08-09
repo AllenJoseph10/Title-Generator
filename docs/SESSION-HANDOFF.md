@@ -24,11 +24,31 @@ him as "William Wade" / `william_j_wade`; scraped data uses the real handle.
 
 ---
 
-## Current state — 2026-08-08
+## Current state — 2026-08-09
 
 **The corpus-backfill and eval work is merged.** PR #4
 (`feat/corpus-backfill-and-eval-baseline`) landed on `main` at `ae9492c`.
-Current working branch is **`feature/UI-Initial`**, cut from that merge.
+`feature/UI-Initial` was cut from that merge and carries the landing-page and
+dashboard rebuild. Current working branch is **`feauture/likes`** (sic — the
+typo is in the branch name), which adds the title feedback loop.
+
+**The thumbs up/down buttons are now load-bearing.** They used to write to
+`title_feedback` and nothing read it. A dislike now reshapes the next
+regenerate for the clip on screen; a like is embedded and retrieved as a voice
+signal for that creator on later videos. Design and rationale:
+`docs/superpowers/specs/2026-08-09-title-feedback-loop-design.md`.
+
+- Liked titles live in their own `liked_titles` table and **never** enter
+  `corpus_titles` — see "Performance metric" below for why that matters.
+- Migration `0004_title_feedback.sql` is **applied** (by hand, as always).
+- `npm run review:feedback` → `datasets/raw/_title-feedback.md`, a human-readable
+  dump of every vote with the visual description it was generated for.
+- Verified 2026-08-09: `npm test` → **256 tests across 19 files**; typecheck clean.
+
+**There is no way to measure whether this helps.** The eval scores real corpus
+rows with known share rates; it cannot score generated titles. This shipped as
+a judgement call, and the review file is what makes that judgement possible
+from real votes. The 0.261 baseline is untouched.
 
 **Corpus: 259 rows, 14 creators** — `datasets/william-wade-titles.csv`, imported
 into `corpus_titles`.
@@ -163,7 +183,34 @@ It applies the *outliers* gate to a creator who was scraped in *top-bottom* mode
 Its "new candidates" for him are mid-pack, not top-50. Not recommended for
 addition. Fix before trusting that section again.
 
-### 7. Smaller open threads
+### 7. Six legacy votes in `title_feedback` cannot be attributed correctly
+
+`title_feedback.title_index` means different things either side of commit
+`5730038`. Before it, the API returned all 10 generated titles unsorted, so an
+index points into the raw array and can legitimately be 5–9. After it, titles
+are persisted already sorted and the app shows the best 5, so the index points
+into `displayTitles(raw)`.
+
+`scripts/review-feedback.ts` uses the post-`5730038` basis, which is correct for
+every vote from now on. The cost is confined to the six rows that predate it:
+one has an index ≥ 5 and is **silently dropped** from the review file (6 rows in,
+5 rendered), and the 26 May and 4 Aug rows may name the wrong title. No single
+code path satisfies both eras — fixing it means a per-row cutoff on
+`title_feedback.created_at`, not a change of basis. Left unremediated
+deliberately: five historical votes.
+
+Related: every one of those votes groups under `@(unattributed)`, because
+`generation_attempts.creator_handle` did not exist when they were written. Not a
+bug — the information was never captured. New generations carry it.
+
+### 8. `sanitizeAvoidTitles` keeps the oldest ten rejections, not the newest
+
+`lib/feedback/rules.ts` truncates the avoid list with `.slice(0, 10)`. Past ten
+rejections on a single clip, the creator's *newest* thumbs-down stops reaching
+the prompt while stale ones persist — the opposite of what they'd expect. Minor
+in practice (ten rejections on one clip is a lot), but it is backwards.
+
+### 9. Smaller open threads
 
 - **Relabel or drop the `comments` column** — it counts top-level comments only,
   which is not what a reader assumes.
@@ -174,8 +221,11 @@ addition. Fix before trusting that section again.
   hardcodes `niche_id: 'luxury-menswear'` and `creator_handle: 'william_j_wade'`.
 - **Stale branch** — `feat/eval-harness` points at the same local commit as the
   merged work but its remote is 20 commits behind. Safe to delete.
-- **No CI.** There is no `.github/` directory. 231 tests and a clean typecheck
+- **No CI.** There is no `.github/` directory. The 256 tests and the typecheck
   run only when someone runs them.
+- **Anthropic spend cap.** Generation returns a 400 until the monthly limit
+  configured in the Anthropic Console is raised. This is a billing setting, not
+  a code fault, and it blocks end-to-end testing of the generate and like paths.
 
 ---
 
@@ -398,7 +448,10 @@ including "0.259 → 0.304" as evidence the signal strengthened. Full detail in
 - `.superpowers/sdd/2026-07-31-burn-in-title-ocr/progress.md` — full decision
   ledger, every deferred finding with its ruling
 - `docs/superpowers/specs/` and `plans/` — design and implementation plans for
-  the OCR pipeline, client-side upload prep, and the eval harness
+  the OCR pipeline, client-side upload prep, the eval harness, and the title
+  feedback loop
+- `datasets/raw/_title-feedback.md` — every vote with the visual description it
+  was generated for; regenerate with `npm run review:feedback`
 - `datasets/raw/_quarantine-review.md` — quarantined videos with both passes'
   evidence
 - `datasets/raw/_metrics-refresh-report.md` — per-creator selection analysis

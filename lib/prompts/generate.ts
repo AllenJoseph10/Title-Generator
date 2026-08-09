@@ -1,6 +1,6 @@
 import { HOOK_TAXONOMY, type HookFamily } from '@/lib/hooks/taxonomy';
 import { partitionByPerformance } from '@/lib/retrieval/contrast';
-import type { CorpusTitle, VisionDescription } from '@/lib/providers/types';
+import type { CorpusTitle, LikedTitle, VisionDescription } from '@/lib/providers/types';
 
 // The system prompt is split into a CACHED prefix (taxonomy + global rules) and a
 // per-creator block (style brief + fingerprint). Both go into Anthropic's `system`
@@ -56,10 +56,45 @@ export function performanceBand(score: number | null): string {
   return `top ${Math.max(1, Math.round((1 - score) * 100))}%`;
 }
 
+// Titles a human kept for visually similar videos.
+//
+// These are a VOICE signal, not evidence. They were generated, approved, and
+// never posted — no share data exists for any of them. The disclaimer is
+// load-bearing: corpus examples in the block above carry real measured
+// percentiles, and if approval arrives through the same channel the model
+// cannot tell the two apart.
+export function buildLikedBlock(likes: LikedTitle[]): string {
+  if (likes.length === 0) return '';
+  const rows = likes
+    .map((l) => `- [${l.hookFamily}] ${l.title}\n  written for: ${l.visualDescription}`)
+    .join('\n');
+  return `
+
+## Titles this creator kept, for videos like this one
+Generated earlier and approved by the creator. They carry no performance data — this is a voice signal, not evidence that a pattern earns shares. Weight them for phrasing and tone, not as proof.
+${rows}`;
+}
+
+// Titles the creator rejected for THIS clip.
+//
+// Deliberately not folded into the contrast block above: that block states its
+// titles ranked near the bottom of the corpus on share rate, which is a claim
+// about measured data. A rejected suggestion was never posted.
+export function buildRejectedBlock(titles: string[]): string {
+  if (titles.length === 0) return '';
+  return `
+
+## Rejected for THIS video
+The creator saw these for this exact clip and rejected them. Do not produce these or close variants.
+${titles.map((t) => `- ${t}`).join('\n')}`;
+}
+
 export function buildUserMessage(args: {
   description: VisionDescription;
   retrievedExamples: CorpusTitle[];
   requiredFamilies: HookFamily[];
+  likedTitles?: LikedTitle[];
+  avoidTitles?: string[];
 }): string {
   // The corpus now spans the real performance range, so retrieval can return
   // rows that genuinely did not work. They are split out rather than dropped:
@@ -80,6 +115,9 @@ These are real titles from visually similar videos that ranked near the bottom o
 ${contrast.map((e) => `- [${e.hookFamily}, ${performanceBand(e.performanceScore)}] ${e.title}`).join('\n')}`
     : '';
 
+  const likedBlock = buildLikedBlock(args.likedTitles ?? []);
+  const rejectedBlock = buildRejectedBlock(args.avoidTitles ?? []);
+
   return `## Video description
 - scene: ${args.description.scene}
 - subject: ${args.description.subject}
@@ -91,7 +129,7 @@ ${contrast.map((e) => `- [${e.hookFamily}, ${performanceBand(e.performanceScore)
 Each is tagged with its hook family and how it ranked on share rate across the corpus. A smaller "top N%" performed better, so weight those patterns more heavily. "unmeasured" means no share data exists for that row — draw no conclusion from it either way. Titles that clearly underperformed are not listed here; they appear in their own section below.
 ${examples}
 Do not carry a specific quantity, price, brand, or proper noun from a retrieved example into a new title unless the video description above actually supports it. You are free to invent your own number when the video genuinely shows a countable set.
-${contrastBlock}
+${likedBlock}${contrastBlock}${rejectedBlock}
 
 ## REQUIRED hook families (you MUST include at least one title for each)
 ${args.requiredFamilies.map((f) => `- ${f}`).join('\n')}

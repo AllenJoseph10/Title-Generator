@@ -4,6 +4,7 @@ import { BUCKET } from '@/lib/storage/constants';
 import { SESSION_COOKIE, verifySession, sessionHash } from '@/lib/auth/passcode';
 import { runPipeline, PipelineError, type PipelineResult } from '@/lib/generation/orchestrator';
 import { displayTitles } from '@/lib/generation/constants';
+import { sanitizeAvoidTitles } from '@/lib/feedback/rules';
 import type { ProviderId } from '@/lib/providers/types';
 
 export const runtime = 'nodejs';
@@ -19,6 +20,7 @@ type Body = {
   vision_provider?: unknown;
   generation_provider?: unknown;
   steering?: unknown;
+  avoid_titles?: unknown;
 };
 
 export async function POST(req: NextRequest) {
@@ -109,6 +111,11 @@ export async function POST(req: NextRequest) {
       vision_provider: visionProvider,
       generation_provider: generationProvider,
       passcode_session_hash: sessHash,
+      // Narrowed local, not the raw body: the pipeline call below retrieves
+      // and attributes with this same value, so a non-string client payload
+      // must not let the attempt row and the pipeline disagree on the key
+      // this feature partitions by.
+      creator_handle: creatorHandle,
     })
     .select('id')
     .single();
@@ -142,6 +149,8 @@ export async function POST(req: NextRequest) {
       visionProviderId: visionProvider,
       generationProviderId: generationProvider,
       steering,
+      creatorHandle: creatorHandle ?? '',
+      avoidTitles: sanitizeAvoidTitles(body.avoid_titles),
     });
   } catch (e) {
     const err = e as PipelineError | Error;
