@@ -17,8 +17,9 @@ const fraunces = Fraunces({
 });
 
 export const metadata = {
-  title: 'Title Generator',
-  description: 'Silent-video title generator',
+  title: 'Hook Title Generator',
+  description:
+    'Drop in a silent clip and get five burned-in title ideas, ranked against real titles whose performance has already been measured.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

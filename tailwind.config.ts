@@ -63,12 +63,42 @@ const config: Config = {
       animation: {
         'fade-in': 'fadeIn 200ms ease-out',
         'slide-up': 'slideUp 220ms ease-out',
+        // Landing-page pipeline animation. `both` fill mode holds the start
+        // state through the delay, which is what makes staggering work.
+        'rise-in': 'slideUp 280ms ease-out both',
+        'drop-in': 'dropIn 460ms cubic-bezier(0.22, 1, 0.36, 1) both',
+        'grow-x': 'growX 520ms ease-out both',
+        sweep: 'sweep 1700ms ease-in-out infinite',
+        // Entrance for the two columns once a clip is loaded.
+        'panel-in': 'panelIn 420ms cubic-bezier(0.22, 1, 0.36, 1) both',
+        // Indeterminate progress: a segment sweeping the length of a track.
+        track: 'trackSlide 1500ms cubic-bezier(0.65, 0, 0.35, 1) infinite',
       },
       keyframes: {
         fadeIn: { '0%': { opacity: '0' }, '100%': { opacity: '1' } },
         slideUp: {
           '0%': { opacity: '0', transform: 'translateY(4px)' },
           '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        dropIn: {
+          '0%': { opacity: '0', transform: 'translateY(-30px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        growX: {
+          '0%': { transform: 'scaleX(0)' },
+          '100%': { transform: 'scaleX(1)' },
+        },
+        panelIn: {
+          '0%': { opacity: '0', transform: 'translateY(12px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        trackSlide: {
+          '0%': { transform: 'translateX(-100%)' },
+          '100%': { transform: 'translateX(300%)' },
+        },
+        sweep: {
+          '0%': { top: '-15%' },
+          '100%': { top: '105%' },
         },
       },
     },

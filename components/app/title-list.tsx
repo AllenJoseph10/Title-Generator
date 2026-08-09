@@ -2,23 +2,25 @@
 
 import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Copy, Check, ThumbsUp, ThumbsDown, Eye } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
+import { Copy, Check, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toaster';
 import { cn } from '@/lib/utils';
-import { BurnInPreview } from './burn-in-preview';
 import { useKeyboard } from '@/lib/hooks/use-keyboard';
-import {
-  priorBucket,
-  STRENGTH_VARIANT,
-  type Title,
-} from './types';
+import { priorBucket, type Strength, type Title } from './types';
+
+// Colour-only strength, so it sits inline with the hook family rather than in
+// a bordered badge. Sage / champagne / muted, matching the strength colours the
+// landing page uses for the same three buckets.
+const STRENGTH_TEXT: Record<Strength, string> = {
+  high: 'text-positive',
+  med: 'text-warning',
+  low: 'text-ink-muted',
+};
 
 type Props = {
   titles: Title[];
   generationId: string;
-  videoEl?: HTMLVideoElement | null;
 };
 
 export type TitleListHandle = {
@@ -27,12 +29,11 @@ export type TitleListHandle = {
 };
 
 export const TitleList = forwardRef<TitleListHandle, Props>(function TitleList(
-  { titles, generationId, videoEl },
+  { titles, generationId },
   ref,
 ) {
   const [copied, setCopied] = useState<number | null>(null);
   const [votes, setVotes] = useState<Record<number, -1 | 1>>({});
-  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [focusedIndex, setFocusedIndex] = useState<number>(0);
   const rowRefs = useRef<Array<HTMLLIElement | null>>([]);
 
@@ -88,14 +89,9 @@ export const TitleList = forwardRef<TitleListHandle, Props>(function TitleList(
           e.preventDefault();
           onCopy(idx, t.text);
         }
-      } else if (e.key === 'Escape') {
-        if (previewIndex !== null) {
-          e.preventDefault();
-          setPreviewIndex(null);
-        }
       }
     },
-    [focusedIndex, titles, previewIndex],
+    [focusedIndex, titles],
   );
 
   return (
@@ -135,25 +131,18 @@ export const TitleList = forwardRef<TitleListHandle, Props>(function TitleList(
 
             <div className="flex flex-col gap-2 min-w-0">
               <p className="font-display text-lg leading-snug text-ink text-balance">{t.text}</p>
+              {/* The strength used to be a bordered Badge, which read as a
+                  separate control rather than a property of the title. It is
+                  now set like the hook family beside it — same size, same
+                  family — and carries its meaning in colour alone. */}
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-mono text-xs text-ink-muted">{t.hookFamily}</span>
-                <span className="text-ink-muted">·</span>
-                <Badge variant={STRENGTH_VARIANT[bucket]}>{bucket}</Badge>
+                <span className="text-xs text-ink-faint">·</span>
+                <span className={cn('font-mono text-xs', STRENGTH_TEXT[bucket])}>{bucket}</span>
               </div>
             </div>
 
             <div className="flex items-center gap-1 md:opacity-60 md:group-hover:opacity-100 transition-opacity">
-              {videoEl && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setPreviewIndex((p) => (p === i ? null : i))}
-                  aria-label="Preview burn-in"
-                  className={cn(previewIndex === i && 'text-ink bg-bg-inset')}
-                >
-                  <Eye className="h-3.5 w-3.5" />
-                </Button>
-              )}
               <Button
                 variant="ghost"
                 size="icon"
@@ -181,7 +170,6 @@ export const TitleList = forwardRef<TitleListHandle, Props>(function TitleList(
                 <ThumbsDown className="h-3.5 w-3.5" />
               </Button>
             </div>
-            {videoEl && <BurnInPreview videoEl={videoEl} title={t.text} open={previewIndex === i} />}
           </motion.li>
         );
       })}

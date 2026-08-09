@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
-import { VideoPanel } from './video-panel';
+import { VideoPanel, VisionSummary } from './video-panel';
 import { TitleList } from './title-list';
 import type { GenerateResponse } from './types';
 
@@ -19,7 +19,6 @@ type DetailResponse = GenerateResponse & {
 export function HistoryModal({ generationId, onClose }: Props) {
   const [data, setData] = useState<DetailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
 
   useEffect(() => {
     if (!generationId) {
@@ -56,7 +55,7 @@ export function HistoryModal({ generationId, onClose }: Props) {
           <div className="grid grid-cols-1 md:grid-cols-[minmax(0,360px)_1fr] gap-8 pt-2">
             <div>
               {data.signedUrl ? (
-                <VideoPanel videoUrl={data.signedUrl} vision={data.visionDescription} onVideoMount={setVideoEl} />
+                <VideoPanel videoUrl={data.signedUrl} />
               ) : (
                 <div className="rounded-md border border-border bg-bg-inset h-72 flex items-center justify-center text-xs text-ink-muted italic">
                   Video unavailable
@@ -70,7 +69,12 @@ export function HistoryModal({ generationId, onClose }: Props) {
                   {data.createdAt ? new Date(data.createdAt).toLocaleString() : ''}
                 </p>
               </div>
-              {data.titles && <TitleList titles={data.titles} generationId={data.id} videoEl={videoEl} />}
+              {data.titles && <TitleList titles={data.titles} generationId={data.id} />}
+              {data.visionDescription && (
+                <div className="mt-4">
+                  <VisionSummary vision={data.visionDescription} />
+                </div>
+              )}
             </div>
           </div>
         )}

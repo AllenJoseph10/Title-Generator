@@ -6,6 +6,7 @@ import { Upload } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { rejectUpload } from '@/lib/storage/constants';
 import { prepareUpload } from '@/lib/media/prepare-upload';
+import { IndeterminateBar } from './processing';
 import { toast } from '@/components/ui/toaster';
 
 type Props = {
@@ -70,24 +71,37 @@ export function UploadDropzone({ onFile, busy }: Props) {
       className={cn(
         'relative flex flex-col items-center justify-center gap-6 rounded-md border border-dashed transition-all',
         'min-h-[340px] px-12 py-16 cursor-pointer select-none',
-        dragOver
-          ? 'border-accent bg-accent-subtle/30'
-          : 'border-border-strong hover:border-ink-muted hover:bg-bg-raised/40',
-        (busy || preparing) && 'pointer-events-none opacity-50',
+        preparing
+          ? 'border-gold/40 bg-gold/[0.04]'
+          : dragOver
+            ? 'border-accent bg-accent-subtle/30'
+            : 'border-border-strong hover:border-ink-muted hover:bg-bg-raised/40',
+        (busy || preparing) && 'pointer-events-none',
       )}
     >
-      <Upload className="h-6 w-6 text-ink-dim" strokeWidth={1.25} />
-      <div className="text-center">
-        <p className="font-display text-2xl text-ink">Drop a silent clip</p>
-        <p className="font-display text-2xl text-ink-dim italic">to generate titles</p>
-      </div>
-      {/* "up to 60s" alone was misleading: 4K/60 phone footage runs ~48 Mbps
-          and hits the 50 mb cap in about 8 seconds, so the size limit binds
-          long before the duration one. Naming the resolution makes the pair
-          reachable rather than aspirational. */}
-      <p className="text-micro uppercase tracking-[0.12em] text-ink-muted">
-        {preparing ? 'preparing clip…' : 'mp4 or mov · ≤ 50 mb · up to 60s at 1080p'}
-      </p>
+      {preparing ? (
+        // Dimming the whole panel read as "disabled" rather than "working".
+        // This replaces it with something that is visibly doing a job.
+        <div className="flex animate-rise-in flex-col items-center gap-5 text-center">
+          <p className="font-display text-2xl text-ink">Preparing your clip</p>
+          <IndeterminateBar />
+        </div>
+      ) : (
+        <>
+          <Upload className="h-6 w-6 text-ink-dim" strokeWidth={1.25} />
+          <div className="text-center">
+            <p className="font-display text-2xl text-ink">Drop a silent clip</p>
+            <p className="font-display text-2xl text-ink-dim italic">to generate titles</p>
+          </div>
+          {/* "up to 60s" alone was misleading: 4K/60 phone footage runs ~48 Mbps
+              and hits the 50 mb cap in about 8 seconds, so the size limit binds
+              long before the duration one. Naming the resolution makes the pair
+              reachable rather than aspirational. */}
+          <p className="text-micro uppercase tracking-[0.12em] text-ink-muted">
+            mp4 or mov · ≤ 50 mb · up to 60s at 1080p
+          </p>
+        </>
+      )}
       <input
         ref={inputRef}
         type="file"
