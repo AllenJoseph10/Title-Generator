@@ -9,7 +9,9 @@
 supabase link --project-ref <ref>
 supabase db push
 ```
-This applies `migrations/0001_init.sql`: extensions, tables, RLS (deny-all), `cost_per_day` view, and seed rows for the 5 hook families.
+This applies every file in `migrations/` in order: extensions, tables, RLS (deny-all), the `cost_per_day` view, seed rows for the 5 hook families, vector search functions, and the title-feedback tables.
+
+`0005_secure_cost_view.sql` sets `security_invoker` on `cost_per_day` and revokes it from `anon`/`authenticated`. Without it the view runs as its owner and leaks daily spend through the REST API, which is what Supabase's `security_definer_view` lint flags.
 
 ## 3. Create the `uploads` storage bucket (one-time, dashboard)
 - Storage → New bucket → name `uploads`, **Private**.
